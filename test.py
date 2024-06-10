@@ -4,24 +4,24 @@ os.chdir(current_dir)
 
 from tokenizer import KMerTokenizer
 
-with open('../training files/file1.txt', 'r', encoding='utf-8') as f:
-  train_data = f.read()
-  print("file opened!")
+# with open('../training files/file1.txt', 'r', encoding='utf-8') as f:
+#   train_data = f.read()
+#   print("file opened!")
 
 tokenizer = KMerTokenizer(k_mers=4)
-tokenizer.build_vocab([train_data])
-tokenizer.save_model('../tokenizer/trained models')
+# tokenizer.build_vocab([train_data])
+# tokenizer.save_model('../tokenizer/trained models')
 
-with open('../training files/file1.txt', 'r', encoding='utf-8') as f:
+with open('training files/file1.txt', 'r', encoding='utf-8') as f:
   test_data = f.read()
   print("file opened!")
-
-tokenizer.load_model('../tokenizer/trained models/base_4k.json')
+f.close()
+tokenizer.load_model('tokenizer/vocabs/base_4k.json')
 
 encoded_tokens = tokenizer.encode(test_data)
+print(encoded_tokens)
 decoded_tokens = tokenizer.decode(encoded_tokens)
 print(decoded_tokens)
-
 print(f"seq length: {len(test_data)} \ntokens length: {len(decoded_tokens)}")
 print(test_data == decoded_tokens)
 print(f"file length: {len(test_data)} \ntokens: {len(encoded_tokens)}")
