@@ -17,7 +17,7 @@ def main_func(data_str, n_str):
   return vocab
 
 data_str = ['a', 't', 'c', 'g', '\n']
-n_str = 2
+n_str = 4
 vocab = main_func(data_str, n_str)
 with open(f'vocabs/base_{n_str}k.json', 'w') as f:
   json.dump(vocab, f)

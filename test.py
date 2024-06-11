@@ -8,15 +8,15 @@ from tokenizer import KMerTokenizer
 #   train_data = f.read()
 #   print("file opened!")
 
-tokenizer = KMerTokenizer(k_mers=4)
+tokenizer = KMerTokenizer(k_mers=8)
 # tokenizer.build_vocab([train_data])
 # tokenizer.save_model('../tokenizer/trained models')
 
 with open('training files/file1.txt', 'r', encoding='utf-8') as f:
-  test_data = f.read()
+  test_data = f.read().lower()
   print("file opened!")
 f.close()
-tokenizer.load_model('tokenizer/vocabs/base_4k.json')
+tokenizer.load_model('tokenizer/vocabs/base_8k.json')
 
 encoded_tokens = tokenizer.encode(test_data)
 print(encoded_tokens)

@@ -12,22 +12,6 @@ class KMerTokenizer:
     kmers = [sequence[i:i+self.k_mers] for i in tqdm(range(0, len(sequence), self.k_mers), desc="tokenizing k-mers")]
     return kmers
 
-  def build_vocab(self, sequences):
-    all_kmers = []
-    for sequence in sequences:
-      all_kmers.extend(self.tokenize_sequence(sequence))
-    token_count = {}
-    for kmer in all_kmers:
-      if kmer in token_count:
-        token_count[kmer] += 1
-      else:
-        token_count[kmer] = 1
-    sorted_tokens = sorted(token_count.items(), key=lambda x: x[1], reverse=True)
-    for token, _ in sorted_tokens:
-      self.token_to_id[token] = len(self.token_to_id)
-      self.id_to_token.append(token)
-    self.vocab = self.token_to_id
-
   def encode(self, sequence):
     encoded_sequence = []
     kmers = self.tokenize_sequence(sequence)
@@ -35,7 +19,7 @@ class KMerTokenizer:
       if kmer in self.token_to_id:
         encoded_sequence.append(self.token_to_id[kmer])
       else:
-        break
+        encoded_sequence.append(-1)
     return encoded_sequence
 
   def decode(self, encoded_sequence):
@@ -44,7 +28,7 @@ class KMerTokenizer:
       if token_id < len(self.id_to_token):
         decoded_tokens.append(self.id_to_token[token_id])
       else:
-        break
+        decoded_tokens.append('')
     return ''.join(decoded_tokens)
   
   def save_model(self, model_path):
