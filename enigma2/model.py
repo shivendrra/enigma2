@@ -1,5 +1,5 @@
 import json
-with open('config.json', 'r', encoding='utf-8') as file:
+with open('enigma2/config.json', 'r', encoding='utf-8') as file:
   params = json.load(file)
 
 # required parameters
