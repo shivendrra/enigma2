@@ -16,14 +16,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 class RMSNorm(nn.Module):
-  def __init__(self, dim: int, eps: float=1e-6):
+  def __init__(self, dim: int, eps: float = 1e-6):
     super().__init__()
     self.eps = eps
-    self.wei = nn.Parameter(torch.ones(dim))
-  
+    self.weight = nn.Parameter(torch.ones(dim))
+
+  def _norm(self, x):
+    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
   def forward(self, x):
-    out = self._norm(x.float()).type_as(x)
-    return out * self.wei
+    output = self._norm(x.float()).type_as(x)
+    return output * self.weight
 
 class Head(nn.Module):
   def __init__(self, head_size, d_model, block_size, dropout):
@@ -33,7 +36,7 @@ class Head(nn.Module):
     self.w_v = nn.Linear(d_model, head_size, bias=False)
     self.dropout = nn.Dropout(dropout)
     self.pos_embd = nn.Parameter(torch.randn(block_size, block_size, head_size))
-    self.register_buffer('trill', torch.tril(torch.ones(block_size, block_size)))
+    self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
   def forward(self, x: torch.tensor, mask: bool= False):
     B, T, C = x.shape

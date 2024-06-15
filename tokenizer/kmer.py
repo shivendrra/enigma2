@@ -19,7 +19,8 @@ class KMerTokenizer:
       if kmer in self.token_to_id:
         encoded_sequence.append(self.token_to_id[kmer])
       else:
-        encoded_sequence.append(-1)
+        encoded_sequence.append(self.vocab_size+1)
+        # continue
     return encoded_sequence
 
   def decode(self, encoded_sequence):

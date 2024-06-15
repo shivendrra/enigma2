@@ -15,7 +15,7 @@ print(f"{(len(test_data)/1e6):.2f} million letters")
 from tokenizer import KMerTokenizer
 
 tokenizer = KMerTokenizer(k_mers=4)
-tokenizer.load_model('tokenizer/vocabs/base_8k.json')
+tokenizer.load_model('tokenizer/vocabs/base_4k.json')
 vocab_size = tokenizer.vocab_size
 
 # Train and test splits
@@ -23,6 +23,9 @@ data = torch.tensor(tokenizer.encode(test_data), dtype=torch.long)
 n = int(0.9*len(data)) # first 90% will be train, rest val
 train_data = data[:n]
 val_data = data[n:]
+
+print(train_data[:10])
+print(val_data[:10])
 
 with open('enigma2/config.json', 'r', encoding='utf-8') as file:
   params = json.load(file)
@@ -35,7 +38,7 @@ eval_interval = params['eval_interval']
 eval_iters = params['eval_iters']
 learning_rate = params['learning_rate']
 
-torch.manual_seed(1400)
+torch.manual_seed(19)
 # data loading
 def get_batch(split):
   # generate a small batch of data of inputs x and targets y
