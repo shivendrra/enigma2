@@ -2,7 +2,7 @@ import ctypes
 import os
 import json
 
-class DNATokenizer:
+class PerChar:
   def __init__(self):
     self.lib_path = os.path.join(os.path.dirname(__file__), "lib", "DNATokenizer.dll")
     self.tokenizer_lib = ctypes.CDLL(self.lib_path)

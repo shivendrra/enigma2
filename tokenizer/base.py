@@ -1,11 +1,11 @@
-import kmer_tokenizer
+import kmer_c
 import json
 from tqdm import tqdm
 
 class KMerTokenizer:
   def __init__(self, k_mers: int = 4):
     self.k_mers = k_mers
-    self.tokenizer = kmer_tokenizer.KMerTokenizer(k_mers)
+    self.tokenizer = kmer_c.KMerTokenizer(k_mers)
     self.vocab = {}
 
   def tokenize_sequence(self, sequence):
@@ -37,14 +37,14 @@ class KMerTokenizer:
     for token, idx in self.vocab.items():
       self.id_to_token[idx] = token
 
-if __name__ == "__main__":
-  tokenizer = KMerTokenizer(k_mers=4)
-  sequences = ["ATGCGTAC", "GTCAGTAC"]
-  for sequence in sequences:
-    print(tokenizer.tokenize_sequence(sequence))
-    encoded = tokenizer.encode(sequence)
-    print(encoded)
-    decoded = tokenizer.decode(encoded)
-    print(decoded)
-  tokenizer.save_model("model")
-  tokenizer.load_model("model/base_4k.json")
+# if __name__ == "__main__":
+#   tokenizer = KMerTokenizer(k_mers=4)
+#   sequences = ["ATGCGTAC", "GTCAGTAC"]
+#   for sequence in sequences:
+#     print(tokenizer.tokenize_sequence(sequence))
+#     encoded = tokenizer.encode(sequence)
+#     print(encoded)
+#     decoded = tokenizer.decode(encoded)
+#     print(decoded)
+#   tokenizer.save_model("model")
+#   tokenizer.load_model("model/base_4k.json")

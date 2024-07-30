@@ -1,2 +1,2 @@
 from .base import KMerTokenizer
-from .tokenizer import DNATokenizer
+from .perchar import PerChar
