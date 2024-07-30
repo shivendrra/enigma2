@@ -1,13 +1,13 @@
-cmake_minimum_required(VERSION 3.5)
-project(DNATokenizer)
+cmake_minimum_required(VERSION 3.12)
+project(kmer)
 
-set(CMAKE_C_STANDARD 11)
+set(pybind11_DIR "C:/Users/shivh/AppData/Roaming/Python/Python311/site-packages/pybind11/share/cmake/pybind11")
+find_package(pybind11 REQUIRED)
 
-# Define the shared library
-add_library(DNATokenizer SHARED ../tokenizer/tokenizer.c)
+set(CMAKE_C_COMPILER "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.XX.XXXXX/bin/Hostx64/x64/cl.exe")
+set(CMAKE_CXX_COMPILER "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.XX.XXXXX/bin/Hostx64/x64/cl.exe")
 
-# Set the output directory for the shared library
-set_target_properties(DNATokenizer PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY ../tokenizer/lib
-  RUNTIME_OUTPUT_DIRECTORY ../tokenizer/lib
-)
+add_library(kmer MODULE csrc/kmer.cpp csrc/bindings.cpp)
+target_link_libraries(kmer PRIVATE pybind11::module)
+
+set_target_properties(kmer PROPERTIES PREFIX "" SUFFIX ".pyd")
