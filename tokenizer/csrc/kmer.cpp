@@ -3,7 +3,7 @@
 #include <cmath>
 #include <algorithm>
 
-KMerTokenizer::KMerTokenizer(int k_mers) : k_mers(k_mers) {}
+KMerTokenizer::KMerTokenizer(int k_mers) : k_mers(k_mers), vocab_size(0) {}
 
 std::vector<std::string> KMerTokenizer::tokenize_sequence(const std::string &sequence) {
   std::vector<std::string> kmers;
@@ -20,7 +20,10 @@ std::vector<int> KMerTokenizer::encode(const std::string &sequence) {
     if (token_to_id.find(kmer) != token_to_id.end()) {
       encoded_sequence.push_back(token_to_id[kmer]);
     } else {
-      encoded_sequence.push_back(token_to_id.size() + 1);
+      int new_id = token_to_id.size();
+      token_to_id[kmer] = new_id;
+      id_to_token.push_back(kmer);
+      encoded_sequence.push_back(new_id);
     }
   }
   return encoded_sequence;
@@ -44,6 +47,7 @@ void KMerTokenizer::set_vocab(const std::unordered_map<std::string, int> &vocab)
   for (const auto &pair : vocab) {
     id_to_token[pair.second] = pair.first;
   }
+  vocab_size = vocab.size();
 }
 
 std::unordered_map<std::string, int> KMerTokenizer::get_vocab() {

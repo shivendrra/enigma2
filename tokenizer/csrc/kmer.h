@@ -19,6 +19,7 @@ private:
   int k_mers;
   std::unordered_map<std::string, int> token_to_id;
   std::vector<std::string> id_to_token;
+  int vocab_size;
 };
 
 #endif
