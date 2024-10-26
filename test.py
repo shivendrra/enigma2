@@ -1,16 +1,17 @@
-import os
-current_dir = os.path.dirname(os.path.realpath(__file__))
-os.chdir(current_dir)
+# import os
+# current_dir = os.path.dirname(os.path.realpath(__file__))
+# os.chdir(current_dir)
+# print(current_dir)
 
-from tokenizer import KMerTokenizer
-
-tokenizer = KMerTokenizer(k_mers=8)
-
-with open('training files/file1.txt', 'r', encoding='utf-8') as f:
+with open('./training files/file1.txt', 'r', encoding='utf-8') as f:
   test_data = f.read().lower()
   print("file opened!")
 f.close()
-tokenizer.load_model('tokenizer/vocabs/base_4k.json')
+
+from tokenizer import KMerTokenizer
+
+tokenizer = KMerTokenizer(k_mers=4)
+tokenizer.load_model('d:/machine learning/enigma2/tokenizer/vocabs/base_4k.model')
 
 encoded_tokens = tokenizer.encode(test_data)
 print(encoded_tokens)
