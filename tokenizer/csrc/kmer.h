@@ -1,43 +1,41 @@
-#ifndef KMER_H
-#define KMER_H
+#ifndef __KMER_H__
+#define __KMER_H__
 
-#include <vector>
-#include <string>
-#include <unordered_map>
+#define MAX_VOCAB_SIZE 10000
+#define MAX_LINE_LENGTH 2048
+#define MAX_SPECIAL_TOKENS 100
 
-// class in C++ scope, not inside extern "C".
-class KMerTokenizer {
-public:
-  KMerTokenizer(int k_mers);
-  std::vector<std::string> tokenize_sequence(const std::string &sequence);
-  std::vector<int> encode(const std::string &sequence);
-  std::string decode(const std::vector<int> &encoded_sequence);
+typedef struct {
+  int idx;
+  char* value;
+} VocabEntry;
 
-  void set_vocab(const std::unordered_map<std::string, int> &vocab);
-  void set_vocab_from_file(const std::string &filename);
-  std::unordered_map<std::string, int> get_vocab();
+typedef struct {
+  int idx1;
+  int idx2;
+} Pair;
 
-private:
-  int k_mers;
-  std::unordered_map<std::string, int> token_to_id;
-  std::vector<std::string> id_to_token;
+typedef struct {
+  Pair pair;
+  int idx;
+} MergeEntry;
+
+typedef struct {
+  VocabEntry vocab[MAX_VOCAB_SIZE];
+  MergeEntry merges[MAX_VOCAB_SIZE];
   int vocab_size;
-};
+  int merge_count;
+  int special_token_count;
+  char special_tokens[MAX_SPECIAL_TOKENS][MAX_LINE_LENGTH];
+} KMerTokenizer;
 
-// c-compatible api for the shared library
-extern "C" {
-  KMerTokenizer* KMerTokenizer_new(int k_mers);
-  void KMerTokenizer_delete(KMerTokenizer* obj);
-
-  char** KMerTokenizer_tokenize_sequence(KMerTokenizer* obj, const char* sequence);
-  void KMerTokenizer_free_tokens(char** tokens);
-
-  int* KMerTokenizer_encode(KMerTokenizer* obj, const char* sequence);
-  void KMerTokenizer_free_int_array(int* array);
-
-  char* KMerTokenizer_decode(KMerTokenizer* obj, const int* encoded_sequence, int length);
-  void KMerTokenizer_set_vocab(KMerTokenizer* obj, const char* filename);
-  char* KMerTokenizer_get_vocab(KMerTokenizer* obj);
-}
+void init_tokenizer(KMerTokenizer* tokenizer, int k_mers);
+void tokenize_sequence(const char* sequence, int k_mers, char*** tokens, int* token_count);
+void build_vocab(KMerTokenizer* tokenizer, const char** sequences, int sequence_count);
+void encode_sequence(KMerTokenizer* tokenizer, const char* sequence, int** encoded, int* encoded_size);
+void decode_sequence(KMerTokenizer* tokenizer, const int* encoded, int encoded_size, char** decoded);
+void save_model(KMerTokenizer* tokenizer, const char* model_path);
+void load_model(KMerTokenizer* tokenizer, const char* model_path);
+void free_tokenizer(KMerTokenizer* tokenizer);
 
 #endif
