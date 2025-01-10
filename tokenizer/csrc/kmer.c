@@ -1,121 +1,116 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include "kmer.h"
 
-void init_tokenizer(KMerTokenizer* tokenizer, int k_mers) {
-  tokenizer->vocab_size = 0;
-  tokenizer->merge_count = 0;
-  tokenizer->special_token_count = 0;
-  for (int i = 0; i < MAX_VOCAB_SIZE; ++i) {
-    tokenizer->vocab[i].value = NULL;
+KMer* create_tokenizer(size_t kmers) {
+  KMer* self = (KMer*)malloc(sizeof(KMer));
+  self->kmers = kmers;
+  self->vocab_size = 0;
+  self->id_to_token = (char**)malloc(MAX_VOCAB_SIZE * sizeof(char*));
+  self->token_to_id = (int*)malloc(MAX_VOCAB_SIZE * sizeof(int));
+}
+
+void tokenizer_sequence(KMer* tokenizer, const char* data, char*** seq, size_t n_kmers) {
+  size_t len = strlen(seq);
+  size_t k = tokenizer->kmers;
+  *n_kmers = len/k;
+  *kmers = (char**)malloc(*n_kmers * sizeof(char*));
+  for (int i; i < *n_kmers; i++) {
+    (*kmers)[i] = (char*)malloc((k + 1) * sizeof(char));
+    strncpy((*kmers)[i], seq + i * k, k);
+    (*kmers)[i] = '\0';
   }
 }
 
-void tokenize_sequence(const char* sequence, int k_mers, char*** tokens, int* token_count) {
-  int len = strlen(sequence);
-  *token_count = len / k_mers + (len % k_mers != 0);
-  *tokens = (char**)malloc(*token_count * sizeof(char*));
+void build_vocab(KMer* tokenizer, const char* seq, size_t n_seq) {
+  char** all_kmers;
+  size_t total_kmers = 0;
 
-  for (int i = 0; i < *token_count; ++i) {
-    (*tokens)[i] = (char*)malloc((k_mers + 1) * sizeof(char));
-    strncpy((*tokens)[i], &sequence[i * k_mers], k_mers);
-    (*tokens)[i][k_mers] = '\0';
-  }
-}
-
-void build_vocab(KMerTokenizer* tokenizer, const char** sequences, int sequence_count) {
-  int token_count;
-  char** tokens;
-
-  for (int i = 0; i < sequence_count; ++i) {
-    tokenize_sequence(sequences[i], tokenizer->vocab_size, &tokens, &token_count);
-    for (int j = 0; j < token_count; ++j) {
-      int found = 0;
-      for (int k = 0; k < tokenizer->vocab_size; ++k) {
-        if (strcmp(tokens[j], tokenizer->vocab[k].value) == 0) {
-          found = 1;
-          break;
-        }
-      }
-      if (!found) {
-        tokenizer->vocab[tokenizer->vocab_size].idx = tokenizer->vocab_size;
-        tokenizer->vocab[tokenizer->vocab_size].value = strdup(tokens[j]);
-        tokenizer->vocab_size++;
-      }
+  for (int i = 0; i < n_seq, i++) {
+    char** kmers;
+    size_t n_kmers;
+    tokenize_sequence(tokenizer, seq, kmers, n_kmers);
+    all_kmers = (char**)realloc((n_kmers + total_kmers) * sizeof(char*));
+    for (int j = 0; j < n_kmers; j++) {
+      all_kmers[total_kmers++] = kmers[j];
     }
-    for (int j = 0; j < token_count; ++j) {
-      free(tokens[j]);
-    }
-    free(tokens);
+    free(kmers);
   }
+  tokenizer->vocab_size = total_kmers < MAX_VOCAB_SIZE ? total_kmers : MAX_VOCAB_SIZE;
+  for (int i = 0; i < tokenizer->vocab_size; i++) {
+    tokenizer->id_to_token[i] = all_kmers[i];
+    tokenizer->token_to_id[i] = i;
+  }
+  free(all_kmers);
 }
 
-void encode_sequence(KMerTokenizer* tokenizer, const char* sequence, int** encoded, int* encoded_size) {
-  char** tokens;
-  int token_count;
-  tokenize_sequence(sequence, tokenizer->vocab_size, &tokens, &token_count);
-
-  *encoded = (int*)malloc(token_count * sizeof(int));
-  *encoded_size = token_count;
-
-  for (int i = 0; i < token_count; ++i) {
-    (*encoded)[i] = -1;
-    for (int j = 0; j < tokenizer->vocab_size; ++j) {
-      if (strcmp(tokens[i], tokenizer->vocab[j].value) == 0) {
-        (*encoded)[i] = tokenizer->vocab[j].idx;
+int* encode(KMer* tokenizer, const char* seq, size_t encoded_size) {
+  char** kmers;
+  size_t n_kmers;
+  tokenize(tokenizer, seq, &kmers, &n_kmers);
+  *encoded_size = n_kmers;
+  int* encoded_seq = (int*)malloc(n_kmers * sizeof(int));
+  for (int i = 0; i < n_kmers, i++) {
+    for (int j = 0; j < tokenizer->vocab_size; j++) {
+      if (strcmp(kmers[i], tokenizer->id_to_token[j]) == 0) {
+        encoded_seq[i] = tokenizer->id_to_token[j];
         break;
       }
     }
-    free(tokens[i]);
+    free(kmers[i]);
   }
-  free(tokens);
+  free(kmers);
+  return encoded_seq;
 }
 
-void decode_sequence(KMerTokenizer* tokenizer, const int* encoded, int encoded_size, char** decoded) {
-  *decoded = (char*)malloc(encoded_size * tokenizer->vocab_size + 1);
-  (*decoded)[0] = '\0';
-
-  for (int i = 0; i < encoded_size; ++i) {
-    if (encoded[i] >= 0 && encoded[i] < tokenizer->vocab_size) {
-      strcat(*decoded, tokenizer->vocab[encoded[i]].value);
-    }
+char *decode_sequence(KMer* tokenizer, const int* encoded_sequence, int encoded_size) {
+  int k = tokenizer->k_mers;
+  char* decoded_sequence = (char *)malloc((encoded_size * k + 1) * sizeof(char));
+  decoded_sequence[0] = '\0';
+  for (int i = 0; i < encoded_size; i++) {
+    strcat(decoded_sequence, tokenizer->id_to_token[encoded_sequence[i]]);
   }
+  return decoded_sequence;
 }
 
-void save_model(KMerTokenizer* tokenizer, const char* model_path) {
-  FILE* fp = fopen(model_path, "w");
-  if (!fp) {
-    perror("Failed to save model");
+void save_model(KMer* tokenizer, const char* path) {
+  FILE* file = fopen(path, "w");
+  if (!file) {
+    printf("Error opening file for saving model.\n");
     return;
   }
-  fprintf(fp, "%d\n", tokenizer->vocab_size);
-  for (int i = 0; i < tokenizer->vocab_size; ++i) {
-    fprintf(fp, "%s\n", tokenizer->vocab[i].value);
+  fprintf(file, "{\"k_mers\": %d, \"vocab\": [", tokenizer->k_mers);
+  for (int i = 0; i < tokenizer->vocab_size; i++) {
+    fprintf(file, "\"%s\"%s", tokenizer->id_to_token[i], (i == tokenizer->vocab_size - 1) ? "" : ", ");
   }
-  fclose(fp);
+  fprintf(file, "]}\n");
+  fclose(file);
+  printf("Model saved to %s\n", path);
 }
 
-void load_model(KMerTokenizer* tokenizer, const char* model_path) {
-  FILE* fp = fopen(model_path, "r");
-  if (!fp) {
-    perror("Failed to load model");
+void load_model(KMer* tokenizer, const char* path) {
+  FILE* file = fopen(path, "r");
+  if (!file) {
+    printf("Error opening file for loading model.\n");
     return;
   }
-  fscanf(fp, "%d\n", &tokenizer->vocab_size);
-  for (int i = 0; i < tokenizer->vocab_size; ++i) {
-    char buffer[MAX_LINE_LENGTH];
-    fgets(buffer, MAX_LINE_LENGTH, fp);
-    buffer[strcspn(buffer, "\n")] = '\0';
-    tokenizer->vocab[i].value = strdup(buffer);
-    tokenizer->vocab[i].idx = i;
+  fscanf(file, "{\"k_mers\": %d, \"vocab\": [", &tokenizer->k_mers);
+  tokenizer->vocab_size = 0;
+  while (fscanf(file, "\"%[^"]\"", tokenizer->id_to_token[tokenizer->vocab_size]) == 1) {
+    tokenizer->token_to_id[tokenizer->vocab_size] = tokenizer->vocab_size;
+    tokenizer->vocab_size++;
+    if (fgetc(file) == ']') break;
   }
-  fclose(fp);
+  fclose(file);
+  printf("Model loaded from %s\n", path);
 }
 
-void free_tokenizer(KMerTokenizer* tokenizer) {
-  for (int i = 0; i < tokenizer->vocab_size; ++i) {
-    free(tokenizer->vocab[i].value);
+void free_tokenizer(KMer* tokenizer) {
+  for (int i = 0; i < tokenizer->vocab_size; i++) {
+    free(tokenizer->id_to_token[i]);
   }
+  free(tokenizer->id_to_token);
+  free(tokenizer->token_to_id);
+  free(tokenizer);
 }
