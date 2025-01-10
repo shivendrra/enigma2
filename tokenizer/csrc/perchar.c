@@ -1,92 +1,57 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "perchar.h"
 
-#define VOCAB_SIZE 9
-
-typedef struct {
-  char chars[VOCAB_SIZE];
-  int vocab_size;
-  int string_to_index[256];
-  char index_to_string[VOCAB_SIZE + 256];
-  int special_index;
-} PerCharTokenizer;
-
-void init_tokenizer(PerCharTokenizer *tokenizer) {
-  char base_chars[VOCAB_SIZE] = {'\n', 'A', 'T', 'G', 'C', 'P', 'M', 'U', ' '};
-  memcpy(tokenizer->chars, base_chars, VOCAB_SIZE);
-  tokenizer->vocab_size = VOCAB_SIZE;
-  tokenizer->special_index = VOCAB_SIZE;
-
-  for (int i = 0; i < 256; i++) {
-    tokenizer->string_to_index[i] = -1;
+void init_tokenizer() {
+  PerChar* self = (PerChar*)malloc(sizeof(PerChar));
+  if (!self) {
+    fprintf(stderr, "Failed to initialize the tokenizer\n");
+    exit(1);
   }
-
-  for (int i = 0; i < VOCAB_SIZE; i++) {
-    tokenizer->string_to_index[(unsigned char)base_chars[i]] = i;
-    tokenizer->index_to_string[i] = base_chars[i];
+  strcpy(self->chars, "\nATGCMPBSE");  // base characters
+  // {a, t, g, c} -> base pairs
+  // m -> mask token; p -> padding token; b -> begin; s -> separate; e -> end
+  // not included the classification token, i'm still tryna understand why tf is it used
+  // classifaction token: https://aditya007.medium.com/understanding-the-cls-token-in-bert-a-comprehensive-guide-a62b3b94a941
+  self->vocab_size = strlen(self->chars);
+  for (int i = 0; i < self->vocab_size; i++) {
+    self->str_to_idx[(int)self->chars[i]] = i;
+    self->id_to_str[i] = self->chars[i];
   }
+  return self;
 }
 
-int* encode(PerCharTokenizer *tokenizer, const char *string, int *encoded_length) {
-  int length = strlen(string);
-  int *encoded = (int *)malloc(length * sizeof(int));
-  if (!encoded) {
-    fprintf(stderr, "Memory allocation failed\n");
-    return NULL;
-  }
-
-  for (int i = 0; i < length; i++) {
-    unsigned char ch = (unsigned char)string[i];
-    if (tokenizer->string_to_index[ch] != -1) {
-      encoded[i] = tokenizer->string_to_index[ch];
+int* encode(PerChar *tokenizer, const char *string, size_t encoded_size) {
+  size_t len = strlen(string);
+  int* encoded = (int*)malloc(len * sizeof(int));
+  *encoded_size = len;
+  for (int i = 0; i < encoded_size; i++) {
+    if(tokenizer->str_to_id[(int)string[i]] >= 0) {
+      encoded[i] = tokenizer->str_to_id[(int)string[i]];
     } else {
-      tokenizer->string_to_index[ch] = tokenizer->special_index;
-      tokenizer->index_to_string[tokenizer->special_index] = ch;
-      encoded[i] = tokenizer->special_index;
-      tokenizer->special_index++;
+      // this logic handles the excpetion
+      // when there's a new character that's not in the vocab; it's added to a new sepcial_idx
+      // special_idx = vocab_size + i
+      int sepcial_index = tokenizer->vocab_size;
+      tokenizer->str_to_id[(int)string[i]] = special_index;
+      tokenizer->id_to_str[i] = string[i];
+      tokenizer->vocab_size++;
+      encoded[i] = special_index;
     }
   }
-  *encoded_length = length;
   return encoded;
 }
 
-char* decode(PerCharTokenizer *tokenizer, int *encoded, int length) {
-  char *decoded = (char *)malloc((length + 1) * sizeof(char));
-  if (!decoded) {
-    fprintf(stderr, "Memory allocation failed\n");
-    return NULL;
+char* decode(PerChar* tokenizer, const int* encoded, size_t encoded_size) {
+  char* decoded = (char*)malloc((encoded_size + 1) * sizeof(char));
+  for (int i = 0; i < encoded_size; i++) {
+    decoded[i] = tokenizer->id_to_str[encoded[i]];
   }
-
-  for (int i = 0; i < length; i++) {
-    if (encoded[i] < tokenizer->special_index) {
-      decoded[i] = tokenizer->index_to_string[encoded[i]];
-    } else {
-      decoded[i] = '?';
-    }
-  }
-  decoded[length] = '\0';
+  decoded[encoded_size] = "\0"; // ensures proper line termination
   return decoded;
 }
 
-int main() {
-  PerCharTokenizer tokenizer;
-  init_tokenizer(&tokenizer);
-
-  const char *string = "AACATGTCCTGCATGGCATTAGTTTGTTGGGGCAGTGCCCGGATAGCATCAACGCTGCGCTGATTTGCCGTGGCGAGAAA";
-  int encoded_length;
-  int *encoded = encode(&tokenizer, string, &encoded_length);
-
-  printf("Encoded: ");
-  for (int i = 0; i < encoded_length; i++) {
-    printf("%d ", encoded[i]);
-  }
-  printf("\n");
-
-  char *decoded = decode(&tokenizer, encoded, encoded_length);
-  printf("Decoded: %s\n", decoded);
-
-  free(encoded);
-  free(decoded);
-  return 0;
+void free_tokenizer(PerChar* tokenizer) {
+  free(tokenizer);
 }
