@@ -1,3 +1,12 @@
+/*
+  perchar.h
+  - per-character tokenizer, tokenizes on the based set of vocab
+  - set size of vocab, no need of loading or saving vocab
+  - compile it as:
+    -- '.so': g++ -shared -fPIC -o libchar.so perchar.c / for linux
+    -- '.dll': g++ -shared -o libchar.dll perchar.c / for windows
+*/
+
 #ifndef __PERCHAR__H__
 #define __PERCHAR__H__
 
@@ -13,7 +22,7 @@ typedef struct {
 
 extern "C" {
   void init_tokenizer();
-  int* encode(PerChar* tokenizer, const char* string, size_t encoded_length);
+  int* encode(PerChar* tokenizer, const char* string, size_t* encoded_length);
   char* decode(PerChar* tokenizer, int* encoded, size_t len);
   void free_tokenizer(PerChar* tokenizer);
 }

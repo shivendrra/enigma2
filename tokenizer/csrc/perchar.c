@@ -19,22 +19,21 @@ void init_tokenizer() {
     self->str_to_idx[(int)self->chars[i]] = i;
     self->id_to_str[i] = self->chars[i];
   }
-  return self;
 }
 
-int* encode(PerChar *tokenizer, const char *string, size_t encoded_size) {
+int* encode(PerChar *tokenizer, const char *string, size_t* encoded_size) {
   size_t len = strlen(string);
   int* encoded = (int*)malloc(len * sizeof(int));
   *encoded_size = len;
-  for (int i = 0; i < encoded_size; i++) {
-    if(tokenizer->str_to_id[(int)string[i]] >= 0) {
-      encoded[i] = tokenizer->str_to_id[(int)string[i]];
+  for (int i = 0; i < *encoded_size; i++) {
+    if(tokenizer->str_to_idx[(int)string[i]] >= 0) {
+      encoded[i] = tokenizer->str_to_idx[(int)string[i]];
     } else {
       // this logic handles the excpetion
       // when there's a new character that's not in the vocab; it's added to a new sepcial_idx
       // special_idx = vocab_size + i
-      int sepcial_index = tokenizer->vocab_size;
-      tokenizer->str_to_id[(int)string[i]] = special_index;
+      int special_index = tokenizer->vocab_size;
+      tokenizer->str_to_idx[(int)string[i]] = special_index;
       tokenizer->id_to_str[i] = string[i];
       tokenizer->vocab_size++;
       encoded[i] = special_index;
@@ -48,7 +47,7 @@ char* decode(PerChar* tokenizer, const int* encoded, size_t encoded_size) {
   for (int i = 0; i < encoded_size; i++) {
     decoded[i] = tokenizer->id_to_str[encoded[i]];
   }
-  decoded[encoded_size] = "\0"; // ensures proper line termination
+  decoded[encoded_size] = '\0'; // ensures proper line termination
   return decoded;
 }
 
