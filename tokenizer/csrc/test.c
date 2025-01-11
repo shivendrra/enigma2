@@ -1,9 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "kmer.h"
 
 int main() {
   KMer* tokenizer = create_tokenizer(4);
+  build_vocab(tokenizer);
+  char path[100];
+  strcpy(path, "./vocab.model");
+  save(tokenizer, path);
 
   // Test sequence
   const char* sequence = "AACATGTCCTGCATGGCATTAGTTTGTTGGGGCAGTGCCCGGATAGCATCAACGCTGCGCTGATTTGCCGTGGCGAGAAA";
@@ -18,15 +23,6 @@ int main() {
     free(kmers[i]);
   }
   free(kmers);
-
-  // Build vocabulary
-  const char* sequences[] = {sequence};
-  build_vocab(tokenizer, sequences, 1);
-
-  printf("\nVocabulary:\n");
-  for (int i = 0; i < tokenizer->vocab_size; i++) {
-    printf("%s -> %d\n", tokenizer->id_to_token[i], tokenizer->token_to_id[i]);
-  }
 
   // Encode the sequence
   int* encoded;

@@ -10,15 +10,14 @@
 #ifndef __KMER__H__
 #define __KMER__H__
 
-#define  MAX_BASE_CHARS  5
-#define  SPECIAL_TOKEN_COUNT  5
+#define  MAX_BASE_CHARS  6
+#define  SPECIAL_TOKEN_COUNT  6
 #define  MAX_TOKEN_SIZE  6
-#define  MAX_VOCAB_SIZE  19530
-
+#define  MAX_VOCAB_SIZE  19530  // supporting till kmer size of 6
 
 typedef struct {
   char chars[MAX_BASE_CHARS];
-  char sepcial_tokens[SPECIAL_TOKEN_COUNT];
+  char special_tokens[SPECIAL_TOKEN_COUNT];
   int kmers;
   int vocab_size;
   char** id_to_token;
@@ -35,6 +34,5 @@ extern "C" {
   void load(KMer* tokenizer, const char* path);
   void free_tokenizer(KMer* tokenizer);
 }
-
 
 #endif  //!__KMER__H__
