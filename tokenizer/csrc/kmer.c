@@ -1,14 +1,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "kmer.h"
+#include "inc/tqdm.h"
 
 KMer* create_tokenizer(int kmers) {
   KMer* self = (KMer*)malloc(sizeof(KMer));
+  // {a, t, g, c, \n} -> base pairs
+  strcpy(self->chars, "\nATGC");  // base characters
+  
+  // m -> mask token; p -> padding token; b -> begin; s -> separate; e -> end
+  // not included the classification token, still tryna understand why tf is it used
+  strcpy(self->special_tokens, "MPBSE")
   self->kmers = kmers;
-  self->vocab_size = 0;
-  self->id_to_token = (char**)malloc(MAX_VOCAB_SIZE * sizeof(char*));
-  self->token_to_id = (int*)malloc(MAX_VOCAB_SIZE * sizeof(int));
+
+  // vocab_size is basically ``summation from i=0 to n=chars_size len(self->chars)^kmers``, since we're trying to create each
+  // possible token -> idx pair till the declared KMer size
+  // so if kmer = 4:
+  //        vocab_size = 5 + 25 + 125 + 625 = 780
+  int vocab_size = 0;
+  for (int i = 0; i <= strlen(self->chars); i++) {
+    vocab_size += pow(i, kmers);
+  }
+  self->vocab_size = vocab_size;
+  self->id_to_token = (char**)malloc((vocab_size + 1) * sizeof(char*));
+  self->token_to_id = (int*)malloc((vocab_size + 1) * sizeof(int));
   return self;
 }
 
@@ -24,29 +41,28 @@ void tokenize_sequence(KMer* tokenizer, const char* data, char*** kmers, int* n_
   }
 }
 
-void build_vocab(KMer* tokenizer, const char* seq, int n_seq) {
-  char** all_kmers;
-  int total_kmers = 0;
-
-  for (int i = 0; i < n_seq; i++) {
-    char** kmers;
-    int n_kmers;
-    tokenize_sequence(tokenizer, seq, &kmers, &n_kmers);
-    all_kmers = (char**)realloc(all_kmers, (n_kmers + total_kmers) * sizeof(char*));
-    for (int j = 0; j < n_kmers; j++) {
-      all_kmers[total_kmers++] = kmers[j];
+void build_vocab(KMer* tokenizer) {
+  int* ids = (int*)malloc(tokenizer->vocab_size * sizeof(int));
+  int str_len = strlen(tokenizer->chars) + 1;
+  char* combination = (char*)malloc(str_len * sizeof(char));
+  combination[str_len] = '\0'; // setting the last index as null
+  for (int i = 0; i < str_len; i++) {
+    ids[i] = 0;
+  }
+  int index = 1;
+  while(1) {
+    for (int i = 0; i < str_len; i++) {
+      combination[i] = tokenizer->chars[ids[i]];
     }
-    free(kmers);
+    for (int i = 0; i < str_len; i++) {
+      if (combination[i] == '\n') {
+        combination[i] = 'n';  // replacing the new_line char with 'n'
+      }
+    }
   }
-  tokenizer->vocab_size = total_kmers < MAX_VOCAB_SIZE ? total_kmers : MAX_VOCAB_SIZE;
-  for (int i = 0; i < tokenizer->vocab_size; i++) {
-    tokenizer->id_to_token[i] = all_kmers[i];
-    tokenizer->token_to_id[i] = i;
-  }
-  free(all_kmers);
 }
 
-int* encode(KMer* tokenizer, const char* seq, int* encoded_size) {
+int* encode_sequence(KMer* tokenizer, const char* seq, int* encoded_size) {
   char** kmers;
   int n_kmers;
   tokenize_sequence(tokenizer, seq, &kmers, &n_kmers);
@@ -96,12 +112,13 @@ void load_model(KMer* tokenizer, const char* path) {
     printf("Error opening file for loading model.\n");
     return;
   }
-  fscanf(file, "{\"kmers\": %d, \"vocab\": [", &tokenizer->kmers);
   tokenizer->vocab_size = 0;
-  while (fscanf(file, "\"%[^\"]\"", tokenizer->id_to_token[tokenizer->vocab_size]) == 1) {
-    tokenizer->token_to_id[tokenizer->vocab_size] = tokenizer->vocab_size;
+  char buffer[100];
+  int index;
+  while (fscanf(file, "%s %d", buffer, &index) == 2) {
+    tokenizer->id_to_token[index] = strdup(buffer);
+    tokenizer->token_to_id[index] = index;
     tokenizer->vocab_size++;
-    if (fgetc(file) == ']') break;
   }
   fclose(file);
   printf("Model loaded from %s\n", path);
