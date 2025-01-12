@@ -7,11 +7,11 @@ int main() {
   KMer* tokenizer = create_tokenizer(4);
   build_vocab(tokenizer);
   char path[100];
-  strcpy(path, "./vocab.model");
+  strcpy(path, "./vocab");
   save(tokenizer, path);
 
   // Test sequence
-  const char* sequence = "AACATGTCCTGCATGGCATTAGTTTGTTGGGGCAGTGCCCGGATAGCATCAACGCTGCGCTGATTTGCCGTGGCGAGAAA";
+  const char* sequence = "BAACATGTCCTGCATGGCATTAMGTTTGTTGGGGCAGTGCCCGPGATAGCATCAACGCTGCGCTGATTTGCCGTGGCGAGAAAE";
 
   char** kmers;
   int num_kmers;

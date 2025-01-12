@@ -31,7 +31,6 @@ extern "C" {
   int* encode_sequence(KMer* tokenizer, const char* seq, int* encoded_size);
   char* decode_sequence(KMer* tokenizer, const int* encoded_seq, int encoded_size);
   void save(KMer* tokenizer, const char* path);
-  void load(KMer* tokenizer, const char* path);
   void free_tokenizer(KMer* tokenizer);
 }
 
