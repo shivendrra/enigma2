@@ -1,41 +1,37 @@
-#ifndef __KMER_H__
-#define __KMER_H__
+/*
+  kmer.h
+  - main ``KMer`` class codes in this file
+  - tokenizes the dna data based on the vocab & respective kmer size
+  - compile it as:
+    -- '.so': g++ -shared -fPIC -o libkmer.so kmer.c / for linux
+    -- '.dll': g++ -shared -o libkmer.dll kmer.c / for windows
+*/
 
-#define MAX_VOCAB_SIZE 10000
-#define MAX_LINE_LENGTH 2048
-#define MAX_SPECIAL_TOKENS 100
+#ifndef __KMER__H__
+#define __KMER__H__
 
-typedef struct {
-  int idx;
-  char* value;
-} VocabEntry;
-
-typedef struct {
-  int idx1;
-  int idx2;
-} Pair;
-
-typedef struct {
-  Pair pair;
-  int idx;
-} MergeEntry;
+#define  MAX_BASE_CHARS  6
+#define  SPECIAL_TOKEN_COUNT  6
+#define  MAX_TOKEN_SIZE  6
+#define  MAX_VOCAB_SIZE  19530  // supporting till kmer size of 6
 
 typedef struct {
-  VocabEntry vocab[MAX_VOCAB_SIZE];
-  MergeEntry merges[MAX_VOCAB_SIZE];
+  char chars[MAX_BASE_CHARS];
+  char special_tokens[SPECIAL_TOKEN_COUNT];
+  int kmers;
   int vocab_size;
-  int merge_count;
-  int special_token_count;
-  char special_tokens[MAX_SPECIAL_TOKENS][MAX_LINE_LENGTH];
-} KMerTokenizer;
+  char** id_to_token;
+  int* token_to_id;
+} KMer;
 
-void init_tokenizer(KMerTokenizer* tokenizer, int k_mers);
-void tokenize_sequence(const char* sequence, int k_mers, char*** tokens, int* token_count);
-void build_vocab(KMerTokenizer* tokenizer, const char** sequences, int sequence_count);
-void encode_sequence(KMerTokenizer* tokenizer, const char* sequence, int** encoded, int* encoded_size);
-void decode_sequence(KMerTokenizer* tokenizer, const int* encoded, int encoded_size, char** decoded);
-void save_model(KMerTokenizer* tokenizer, const char* model_path);
-void load_model(KMerTokenizer* tokenizer, const char* model_path);
-void free_tokenizer(KMerTokenizer* tokenizer);
+extern "C" {
+  KMer* create_tokenizer(int kmers);
+  void tokenize_sequence(KMer* tokenizer, const char* data, char*** kmers, int* n_kmers);
+  void build_vocab(KMer* tokenizer);
+  int* encode_sequence(KMer* tokenizer, const char* seq, int* encoded_size);
+  char* decode_sequence(KMer* tokenizer, const int* encoded_seq, int encoded_size);
+  void save(KMer* tokenizer, const char* path);
+  void free_tokenizer(KMer* tokenizer);
+}
 
-#endif
+#endif  //!__KMER__H__
