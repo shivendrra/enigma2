@@ -1,40 +1,22 @@
 import ctypes
-import os
-import json
+from .cbase import libchar, CChar
 
-class PerChar:
+class PerChar(CChar):
   def __init__(self):
-    self.lib_path = os.path.join(os.path.dirname(__file__), "lib", "DNATokenizer.dll")
-    self.tokenizer_lib = ctypes.CDLL(self.lib_path)
+    self._core_tokenizer = libchar.init_tokenizer()
+  
+  def encode(self, seq: str):
+    encoded_size = ctypes.c_size_t(0)
+    encoded_ptr = libchar.encode_sequence(self._core_tokenizer, seq.encode("utf-8"), ctypes.byref(encoded_size))
+    encoded = [encoded_ptr[i] for i in range(encoded_size.value)]
+    return encoded
 
-    class PerCharTokenizer(ctypes.Structure):
-      _fields_ = [("chars", ctypes.c_char * 9),
-                  ("vocab_size", ctypes.c_int),
-                  ("string_to_index", ctypes.c_int * 256),
-                  ("index_to_string", ctypes.c_char * (9 + 256)),
-                  ("special_index", ctypes.c_int)]
-      
-    self.PerCharTokenizer = PerCharTokenizer
-    self.tokenizer = PerCharTokenizer()
+  def decode(self, ids: list):
+    encoded_size = len(ids)
+    encoded_array = (ctypes.c_int * encoded_size)(*ids)
+    decoded_ptr = libchar.decode_sequence(self._core_tokenizer, encoded_array, ctypes.c_size_t(encoded_size))
+    decoded = ctypes.string_at(decoded_ptr).decode("utf-8")
+    return decoded
 
-    self.tokenizer_lib.init_tokenizer.argtypes = [ctypes.POINTER(PerCharTokenizer)]
-    self.tokenizer_lib.init_tokenizer(ctypes.byref(self.tokenizer))
-
-    self.tokenizer_lib.encode.argtypes = [ctypes.POINTER(PerCharTokenizer), ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]
-    self.tokenizer_lib.encode.restype = ctypes.POINTER(ctypes.c_int)
-    self.tokenizer_lib.decode.argtypes = [ctypes.POINTER(PerCharTokenizer), ctypes.POINTER(ctypes.c_int), ctypes.c_int]
-    self.tokenizer_lib.decode.restype = ctypes.c_char_p
-    self.tokenizer_lib.free_memory.argtypes = [ctypes.POINTER(ctypes.c_int)]
-
-  def encode(self, sequence):
-    encoded_length = ctypes.c_int()
-    encoded = self.tokenizer_lib.encode(ctypes.byref(self.tokenizer), sequence.encode('utf-8'), ctypes.byref(encoded_length))
-    result = [encoded[i] for i in range(encoded_length.value)]
-    self.tokenizer_lib.free_memory(encoded)
-    return result
-
-  def decode(self, encoded_sequence):
-    length = len(encoded_sequence)
-    encoded_array = (ctypes.c_int * length)(*encoded_sequence)
-    decoded = self.tokenizer_lib.decode(ctypes.byref(self.tokenizer), encoded_array, length)
-    return decoded.decode('utf-8')
+  def __del__(self):
+    libchar.free_tokenizer(self._core_tokenizer)

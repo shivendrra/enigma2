@@ -1,2 +1,2 @@
-from .base import KMerTokenizer
+from .kmer import KMer
 from .perchar import PerChar

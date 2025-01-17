@@ -20,11 +20,9 @@ typedef struct {
   char id_to_str[MAX_CHARS];
 } PerChar;
 
-extern "C" {
-  void init_tokenizer();
-  int* encode(PerChar* tokenizer, const char* string, size_t* encoded_length);
-  char* decode(PerChar* tokenizer, int* encoded, size_t len);
-  void free_tokenizer(PerChar* tokenizer);
-}
+PerChar* init_tokenizer();
+int* encode_sequence(PerChar* tokenizer, const char* string, size_t* encoded_length);
+char* decode_sequence(PerChar* tokenizer, const int* encoded, size_t len);
+void free_tokenizer(PerChar* tokenizer);
 
 #endif  //!__PERCHAR__H__

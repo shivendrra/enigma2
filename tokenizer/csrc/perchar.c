@@ -3,7 +3,7 @@
 #include <string.h>
 #include "perchar.h"
 
-void init_tokenizer() {
+PerChar* init_tokenizer() {
   PerChar* self = (PerChar*)malloc(sizeof(PerChar));
   if (!self) {
     fprintf(stderr, "Failed to initialize the tokenizer\n");
@@ -19,9 +19,10 @@ void init_tokenizer() {
     self->str_to_idx[(int)self->chars[i]] = i;
     self->id_to_str[i] = self->chars[i];
   }
+  return self;
 }
 
-int* encode(PerChar *tokenizer, const char *string, size_t* encoded_size) {
+int* encode_sequence(PerChar *tokenizer, const char *string, size_t* encoded_size) {
   size_t len = strlen(string);
   int* encoded = (int*)malloc(len * sizeof(int));
   *encoded_size = len;
@@ -42,7 +43,7 @@ int* encode(PerChar *tokenizer, const char *string, size_t* encoded_size) {
   return encoded;
 }
 
-char* decode(PerChar* tokenizer, const int* encoded, size_t encoded_size) {
+char* decode_sequence(PerChar* tokenizer, const int* encoded, size_t encoded_size) {
   char* decoded = (char*)malloc((encoded_size + 1) * sizeof(char));
   for (int i = 0; i < encoded_size; i++) {
     decoded[i] = tokenizer->id_to_str[encoded[i]];
