@@ -25,3 +25,17 @@ print(f"seq length: {len(test)} \ntokens length: {len(decoded_tokens)}")
 print(test == decoded_tokens)
 print(f"file length: {len(test)} \ntokens: {len(encoded_tokens)}")
 print(f"compression ration: {(len(test) / len(encoded_tokens)):.2f}x")
+
+# KMer tokenizer
+
+from tokenizer import KMer
+
+tokenizer = KMer(kmer=4)
+encoded_tokens = tokenizer.encode(test)
+print(encoded_tokens)
+decoded_tokens = tokenizer.decode(encoded_tokens)
+print(decoded_tokens)
+print(f"seq length: {len(test)} \ntokens length: {len(decoded_tokens)}")
+print(test == decoded_tokens)
+print(f"file length: {len(test)} \ntokens: {len(encoded_tokens)}")
+print(f"compression ration: {(len(test) / len(encoded_tokens)):.2f}x")
