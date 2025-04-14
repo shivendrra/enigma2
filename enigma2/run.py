@@ -12,10 +12,10 @@ with open('training files/file1.txt', 'r', encoding='utf-8') as f:
   print(f"{(len(test_data)/1e6):.2f} million letters")
   f.close()
 
-from biosaic import DNATokenizer, get_encodings, get_modes
+from biosaic import tokenizer, get_encodings
 from .model import Transformer, ModelConfig
 
-tokenizer = DNATokenizer(encoding=get_encodings[3], mode=get_modes)
+tokenizer = tokenizer(encoding=get_encodings[3])
 vocab_size = tokenizer.vocab_size
 
 class TrainConfig:
@@ -54,6 +54,7 @@ cosine_scheduler = CosineAnnealingLR(
 file_path = "/content/drive/MyDrive/dna_data.txt"
 data = Dataset(file_path, ratio=0.2)
 train_data, val_data = data.train_test_split()
+train_data, val_data = tokenizer.encode(train_data), tokenizer.encode(val_data)
 
 torch.manual_seed(400)
 def get_batch(split):
