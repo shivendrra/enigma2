@@ -43,9 +43,12 @@ cosine_scheduler = CosineAnnealingLR(
 
 # train-test split
 file_path = "/content/drive/MyDrive/dna_data.txt"
-data = Dataset(file_path, get_encodings[3], ratio=0.2)
-train_data, val_data = data.train_test_split()
-train_data, val_data = tokenizer.encode(train_data), tokenizer.encode(val_data)
+with open(file_path, 'r', encoding='utf-8') as f:
+  sequence = f.read()
+  print("file opened!")
+  f.close()
+dataset = Dataset(file_path, get_encodings[3], ratio=0.2)
+dataset.load(sequence)
 
 @torch.no_grad()
 def estimate_loss():
@@ -54,7 +57,7 @@ def estimate_loss():
   for split in ['train', 'val']:
     losses = torch.zeros(TrainConfig.eval_iters)
     for k in range(TrainConfig.eval_iters):
-      X, Y = data.get_batch(split, batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device)
+      X, Y = dataset.get_batch(split, batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device)
       x_recon, vq_loss, _ = _model(X)
       recon_loss = F.cross_entropy(x_recon.view(-1, 4), Y.view(-1, 4))
       losses[k] = (recon_loss + vq_loss).item()
@@ -66,7 +69,7 @@ import timeit
 
 start_time = timeit.default_timer()
 for epoch in range(TrainConfig.epochs):
-  xb, yb = data.get_batch("train", batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device)
+  xb, yb = dataset.get_batch("train", batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device)
 
   x_recon, vq_loss, _ = _model(xb)
   recon_ce  = F.cross_entropy(x_recon.view(-1,4), yb.view(-1,4))
