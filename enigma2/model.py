@@ -1,15 +1,12 @@
-import json
-with open('enigma2/config.json', 'r', encoding='utf-8') as file:
-  params = json.load(file)
-
-# required parameters
-block_size = params['block_size']
-d_model = params['d_model']
-n_head = params['n_heads']
-n_layers = params['n_layers']
-learning_rate = params['learning_rate']
-dropout = params['dropout']
-norm_eps = params['norm_eps']
+class ModelConfig:
+  block_size:int = 256
+  n_head:int = 12
+  n_layers:int = 12
+  d_model:int = 512
+  ffn_multiplier:int = 4
+  n_ff:int = ffn_multiplier * d_model
+  dropout:float = 0.2
+  norm_eps:float = 1e-5
 
 import torch
 import torch.nn as nn
@@ -103,14 +100,14 @@ class DecoderBlock(nn.Module):
     return x_out
 
 class Transformer(nn.Module):
-  def __init__(self, vocab_size: int):
+  def __init__(self, params: ModelConfig, vocab_size: int, block_size: int):
     super().__init__()
     self.block_size = block_size
-    self.token_embeddings = nn.Embedding(vocab_size, d_model)
-    self.decoder = nn.Sequential(*[DecoderBlock(n_head=n_head, d_model=d_model, dropout=dropout, norm_eps=norm_eps, block_size=block_size) for _ in range(n_layers)])
-    self.norm_final = RMSNorm(d_model, eps=norm_eps)
-    self.linear_final = nn.Linear(d_model, vocab_size)
-    self.dropout = nn.Dropout(dropout)
+    self.token_embeddings = nn.Embedding(vocab_size, params.d_model)
+    self.decoder = nn.Sequential(*[DecoderBlock(n_head=params.n_head, d_model=params.d_model, dropout=params.dropout, norm_eps=params.norm_eps, block_size=params.block_size) for _ in range(params.n_layers)])
+    self.norm_final = RMSNorm(params.d_model, eps=params.norm_eps)
+    self.linear_final = nn.Linear(params.d_model, vocab_size)
+    self.dropout = nn.Dropout(params.dropout)
     
   def forward(self, idx, targets=None):
     B, T = idx.shape
