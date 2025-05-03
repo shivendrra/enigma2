@@ -92,10 +92,12 @@ class Database:
       Returns a list of aligned SeqRecord.
     """
     records = list(SeqIO.parse(fasta_path, 'fasta'))
+    original_lengths = {r.id: len(r.seq) for r in records}
     max_len = max(len(r.seq) for r in records)
     for r in records:
-      seq = str(r.seq).ljust(max_len, '-')
-      r.seq = Seq(seq)
+      padded = str(r.seq).ljust(max_len, '-')
+      r.seq = Seq(padded)
+      r.annotations['original_length'] = original_lengths[r.id]
     return records
 
   def save_aligned(self, aligned: List[SeqRecord], topic: str):
@@ -103,7 +105,9 @@ class Database:
       Save aligned sequences in chosen mode (text, csv, parquet).
     """
     data = {
-      'id': [r.id for r in aligned],
+      'id':       [r.id for r in aligned],
+      'name':     [r.description for r in aligned],
+      'length':   [r.annotations.get('original_length', len(r.seq)) for r in aligned],
       'sequence': [str(r.seq) for r in aligned]
     }
     df = pd.DataFrame(data)
@@ -128,10 +132,10 @@ class Database:
     for topic in self.topics:
       print(f"[+] Processing topic: {topic}")
       ids = self.search(topic)
-      print(f"    » Found {len(ids)} IDs")
+      print(f"    >> Found {len(ids)} IDs")
       fasta = self.fetch(ids, topic)
-      print(f"    » Fetched FASTA -> {fasta}")
+      print(f"    >> Fetched FASTA -> {fasta}")
       aligned = self.align_topic(fasta)
-      print(f"    » Aligned {len(aligned)} sequences")
+      print(f"    >> Aligned {len(aligned)} sequences")
       self.save_aligned(aligned, topic)
-      print(f"    » Saved aligned database for '{topic}'\n")
+      print(f"    >> Saved aligned database for '{topic}'\n")
