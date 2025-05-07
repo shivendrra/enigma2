@@ -5,6 +5,50 @@ from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 import pandas as pd
 
+class EntrezQueries:
+  """
+    Encapsulates a set of predefined Entrez query strings.
+    Instantiating or calling this class returns the full list of queries."""
+  def __init__(self):
+    # Predefined Entrez‐style queries for DNA database construction
+    self.queries = [
+      "BRCA1[Gene] AND Homo sapiens[Organism]",
+      "TP53[Gene] AND Homo sapiens[Organism]",
+      "CFTR[Gene] AND Homo sapiens[Organism]",
+      "G6PD[Gene] AND Homo sapiens[Organism]",
+      "MTHFR[Gene] AND Homo sapiens[Organism]",
+      "HBB[Gene] AND Homo sapiens[Organism]",
+      "PAH[Gene] AND Homo sapiens[Organism]",
+      "MT-CO1[Gene] AND Homo sapiens[Organism]",
+      "COX3[Gene] AND Mus musculus[Organism]",
+      "BRCA2[Gene] AND Mus musculus[Organism]",
+      "SOD1[Gene] AND Mus musculus[Organism]",
+      "CFTR[Gene] AND Pan troglodytes[Organism]",
+      "hemoglobin[Gene] AND Gallus gallus[Organism]",
+      "cytochrome b[Gene] AND Drosophila melanogaster[Organism]",
+      "ribosomal protein L3[Gene] AND Saccharomyces cerevisiae[Organism]",
+      "recA[Gene] AND Escherichia coli[Organism]",
+      "rpoB[Gene] AND Mycobacterium tuberculosis[Organism]",
+      "16S rRNA[Gene] AND Streptomyces coelicolor[Organism]",
+      "COI[Gene] AND Danio rerio[Organism]",
+      "PSEN1[Gene] AND Homo sapiens[Organism]",
+      "KRAS[Gene] AND Homo sapiens[Organism]",
+      "EGFR[Gene] AND Homo sapiens[Organism]",
+      "PDGFRA[Gene] AND Rattus norvegicus[Organism]",
+      "rbcL[Gene] AND Arabidopsis thaliana[Organism]",
+      "chlorophyll a/b binding protein[Gene] AND Oryza sativa[Organism]"
+    ]
+
+  def __call__(self):
+    """
+      Returns the list of predefined queries."""
+    return self.queries
+
+  def __iter__(self):
+    """
+      Allows iteration over the queries."""
+    return iter(self.queries)
+
 class Database:
   """
     Automate DNA dataset collection, processing, and alignment into
@@ -19,7 +63,7 @@ class Database:
       max_rate (float): Max requests in a second. needs `api_key`, `email` for `max_rate` > 3
       batch_size (int): Number of sequences per file. Defaults to 500.
       retmax (int): Max number of records to retrieve. Defaults to 10000.
-      db (str): NCBI database to search. Defaults to "nucleotide".
+      db (str): NCBI database to search. Defaults to `nucleotide`.
       fmt (str): fetching format for the Search. defaults to `fasta`.
   """
   def __init__(self, topics: List[str], out_dir: str, mode: str = 'text', email: Optional[str] = None, api_key: Optional[str] = None, max_rate: float = 3.0, batch_size: int = 500, retmax: int = 10000, db: str = 'nucleotide', fmt: str = 'fasta'):

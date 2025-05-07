@@ -1,2 +1,2 @@
 from .model import Transformer
-from .database import Database
+from .database import Database, EntrezQueries
