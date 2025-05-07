@@ -28,8 +28,6 @@ Install dependencies via:
 pip install torch pandas pyarrow biosaic
 ```
 
----
-
 ## Dataset Preparation
 
 1. **Input File**: A plain-text file containing concatenated DNA sequences (e.g., `dna_data.txt`).

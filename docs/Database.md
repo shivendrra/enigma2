@@ -91,8 +91,6 @@ python test.py
 
 This retrieves up to 1000 Human nucleotide records, aligns them, and writes `./data/Human.csv`.
 
----
-
 ## Configuration Details
 
 | Flag           | Description                                | Default      |
@@ -107,8 +105,6 @@ This retrieves up to 1000 Human nucleotide records, aligns them, and writes `./d
 | `--retmax`     | Maximum IDs returned per search            | `10000`      |
 | `--db`         | Entrez database (e.g., `nucleotide`)       | `nucleotide` |
 | `--format`     | EFetch format (e.g., `fasta`, `gb`)        | `fasta`      |
-
----
 
 ## Project Structure
 
