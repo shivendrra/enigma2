@@ -1,5 +1,5 @@
-import os, time, re, csv, io
-from typing import List, Optional
+import os, time, io
+from typing import List
 from Bio import Entrez, SeqIO
 from http.client import IncompleteRead
 from urllib.error import HTTPError
@@ -37,7 +37,42 @@ class EntrezQueries:
       "EGFR[Gene] AND Homo sapiens[Organism]",
       "PDGFRA[Gene] AND Rattus norvegicus[Organism]",
       "rbcL[Gene] AND Arabidopsis thaliana[Organism]",
-      "chlorophyll a/b binding protein[Gene] AND Oryza sativa[Organism]"
+      "chlorophyll a/b binding protein[Gene] AND Oryza sativa[Organism]",
+      "ACTB[Gene] AND Homo sapiens[Organism]",
+      "MYC[Gene] AND Homo sapiens[Organism]",
+      "FBN1[Gene] AND Homo sapiens[Organism]",
+      "COL1A1[Gene] AND Homo sapiens[Organism]",
+      "VHL[Gene] AND Homo sapiens[Organism]",
+      "TTR[Gene] AND Homo sapiens[Organism]",
+      "ATP7B[Gene] AND Homo sapiens[Organism]",
+      "MLH1[Gene] AND Homo sapiens[Organism]",
+      "APOE[Gene] AND Homo sapiens[Organism]",
+      "HTT[Gene] AND Homo sapiens[Organism]",
+      "ABCC6[Gene] AND Homo sapiens[Organism]",
+      "CDKN2A[Gene] AND Homo sapiens[Organism]",
+      "PAX6[Gene] AND Homo sapiens[Organism]",
+      "SCN1A[Gene] AND Homo sapiens[Organism]",
+      "MECP2[Gene] AND Homo sapiens[Organism]",
+      "NOD2[Gene] AND Homo sapiens[Organism]",
+      "ALB[Gene] AND Homo sapiens[Organism]",
+      "INS[Gene] AND Homo sapiens[Organism]",
+      "HLA-DQA1[Gene] AND Homo sapiens[Organism]",
+      "TNF[Gene] AND Homo sapiens[Organism]",
+      "FOXP2[Gene] AND Homo sapiens[Organism]",
+      "CLOCK[Gene] AND Homo sapiens[Organism]",
+      "CYP2D6[Gene] AND Homo sapiens[Organism]",
+      "NR3C1[Gene] AND Homo sapiens[Organism]",
+      "LCT[Gene] AND Homo sapiens[Organism]",
+      "MEL1A[Gene] AND Homo sapiens[Organism]",
+      "ACE2[Gene] AND Homo sapiens[Organism]",
+      "SLC6A4[Gene] AND Homo sapiens[Organism]",
+      "OXTR[Gene] AND Homo sapiens[Organism]",
+      "TAS2R38[Gene] AND Homo sapiens[Organism]",
+      "HNF4A[Gene] AND Homo sapiens[Organism]",
+      "SHH[Gene] AND Mus musculus[Organism]",
+      "OPN1LW[Gene] AND Homo sapiens[Organism]",
+      "MYH7[Gene] AND Homo sapiens[Organism]",
+      "TUBA1A[Gene] AND Homo sapiens[Organism]"
     ]
 
   def __call__(self):  return self.queries
@@ -45,13 +80,12 @@ class EntrezQueries:
 
 class Database:
   """
-    Automate DNA dataset collection, processing, and alignment into
-    topic-specific “databases.”
-
+    Automate DNA dataset collection & processing.
+      Fetch raw FASTA from NCBI with guaranteed API key, immediate write
+    and on-disk SeqIO index for O(1) lookup.
     Args:
       topics (List[str]): List containing strings of topics needed for building database
       out_dir (str) : path to output directory.
-      mode (str) [ 'text' | 'csv' | 'parquet' ]: mode to set the database in format.
       email (str, optional): email address required by NCBI. Defaults to None.
       api_key (str, optional): NCBI API key for higher rate limits. Defaults to None.
       max_rate (float): Max requests in a second. needs `api_key`, `email` for `max_rate` > 3
@@ -60,23 +94,23 @@ class Database:
       db (str): NCBI database to search. Defaults to `nucleotide`.
       fmt (str): fetching format for the Search. defaults to `fasta`.
   """
-  def __init__(self, topics: List[str], out_dir: str, mode: str = 'text', email: Optional[str] = None, api_key: Optional[str] = None, max_rate: float = 3.0, batch_size: int = 500, retmax: int = 10000, db: str = 'nucleotide', fmt: str = 'fasta', raw: bool = False):
-    self.topics, self.out_dir, self.mode = topics, out_dir, mode
-    self.batch_size = batch_size
-    self.retmax = retmax
+
+  def __init__(self, topics: List[str], out_dir: str, email: str, api_key: str, max_rate: float = 10.0, batch_size: int = 500, retmax: int = 10000, db: str = 'nucleotide', fmt: str = 'fasta'):
+    if not api_key:
+      raise ValueError("An NCBI API key is required.")
+    if not email:
+      raise ValueError("An Email is required.")
+    Entrez.email   = email
+    Entrez.api_key = api_key
+
+    self.topics, self.out_dir = topics, out_dir
+    self.max_rate, self.batch_size, self.retmax = max_rate, batch_size, retmax
     self.db, self.fmt = db, fmt
-    self.raw = raw
-
-    if email:
-      Entrez.email = email
-    if api_key:
-      Entrez.api_key = api_key
-
+    self._sleep = 1.0 / self.max_rate
     os.makedirs(self.out_dir, exist_ok=True)
-    self._sleep = 1.0 / max_rate  # NCBI allows up to max_rate req/sec -> sleep interval
 
   def _sanitize(self, s: str) -> str:
-    return re.sub(r'[^A-Za-z0-9_\-]+', '_', s).strip('_')
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in s).strip("_")
 
   def search(self, query: str) -> List[str]:
     handle = Entrez.esearch(db=self.db, term=query, retmax=self.retmax)
@@ -84,118 +118,80 @@ class Database:
     handle.close()
     return rec.get('IdList', [])
 
-  def _safe_efetch(self, id_list):
-    for _ in range(3):  # retry up to 3 times
+  def _safe_efetch(self, ids: List[str]) -> io.StringIO:
+    for attempt in range(3):
       try:
-        handle = Entrez.efetch(db=self.db, id=','.join(id_list), rettype=self.fmt, retmode='text')
-        data = handle.read()
-        handle.close()
+        h = Entrez.efetch(db=self.db, id=",".join(ids), rettype=self.fmt, retmode='text')
+        data = h.read()
+        h.close()
         return io.StringIO(data)
       except (IncompleteRead, HTTPError) as e:
-        print(f"Retrying after network error: {e}")
-        time.sleep(2)
-    raise RuntimeError("Failed to fetch after retries.")
+        print(f"[Warning] fetch attempt {attempt+1} failed: {e}")
+        time.sleep(2 ** attempt)
+    raise RuntimeError("Failed to fetch batch after retries")
 
-  def fetch_raw(self, ids: List[str], topic: str) -> str:
-    raw_dir = os.path.join(self.out_dir, 'raw')
-    os.makedirs(raw_dir, exist_ok=True)
-    path = os.path.join(raw_dir, f"{self._sanitize(topic)}.fasta")
-    with open(path, 'w', encoding='utf-8') as out:
-      for i in range(0, len(ids), self.batch_size):
-        batch = ids[i:i+self.batch_size]
-        h = Entrez.efetch(db=self.db, id=','.join(batch), rettype=self.fmt, retmode='text')
-        out.write(h.read())
-        h.close()
-        time.sleep(self._sleep)
-    return path
-
-  def _determine_max_len(self, ids: List[str]) -> int:
-    max_len = 0
-    for i in range(0, len(ids), self.batch_size):
-      batch = ids[i:i+self.batch_size]
-      handle = self._safe_efetch(batch)
-      for rec in SeqIO.parse(handle, 'fasta'):
-        length = len(rec.seq)
-        if length > max_len:
-          max_len = length
-      handle.close()
-      time.sleep(self._sleep)
-    return max_len
-
-  def _stream_and_write(self, ids: List[str], max_len: int, topic: str):
-    fname = self._sanitize(topic)
-    out_path = os.path.join(self.out_dir, f"{fname}.{self.mode}")
-
-    if self.mode == 'text':
-      out_handle = open(out_path, 'w', encoding='utf-8')
-    elif self.mode == 'csv':
-      out_handle = open(out_path, 'w', newline='', encoding='utf-8')
-      writer = csv.writer(out_handle)
-      writer.writerow(['id','name','length','sequence'])
-    elif self.mode == 'parquet':
-      rows_buffer = []
-      part_index  = 0
-    else:
-      raise ValueError(f"Unknown mode: {self.mode}")
-
-    for i in range(0, len(ids), self.batch_size):
-      batch = ids[i:i+self.batch_size]
-      h = Entrez.efetch(db=self.db, id=','.join(batch), rettype=self.fmt, retmode='text')
-      for rec in SeqIO.parse(h, 'fasta'):
-        seq_str = str(rec.seq)
-        padded = seq_str.ljust(max_len, '-')
-        row = [rec.id, rec.description, len(seq_str), padded]
-        if self.mode == 'text':
-          out_handle.write(padded + '\n')
-        elif self.mode == 'csv':
-          writer.writerow(row)
-        else:  # parquet
-          rows_buffer.append({
-            'id': rec.id,
-            'name': rec.description,
-            'length': len(seq_str),
-            'sequence': padded})
-          if len(rows_buffer) >= 10000:
-            df = pd.DataFrame(rows_buffer)
-            df.to_parquet(f"{out_path}.part{part_index}", index=False)
-            part_index += 1
-            rows_buffer.clear()
-      h.close()
-      time.sleep(self._sleep)
-
-    if self.mode == 'parquet' and rows_buffer:
-      df = pd.DataFrame(rows_buffer)
-      df.to_parquet(f"{out_path}.part{part_index}", index=False)
-    out_handle.close()
-    print(f"\t>> Wrote streamed {self.mode} database: {out_path}")
-
-  def build_raw(self):
+  def build(self, with_index: bool=True):
     """
-      For each topic: perform ESearch → EFetch batches → write raw FASTA """
-    for topic in self.topics:
-      print(f"[+] Raw build for topic: {topic}")
-      ids = self.search(topic)
-      print(f"\t>> Found {len(ids)} IDs")
-      if not ids:
-        continue
-      fasta_path = self.fetch_raw(ids, topic)
-      print(f"\t>> Wrote raw FASTA → {fasta_path}")
-
-  def build_aligned_sequence(self):
+      For each topic:
+        1. search -> get UIDs
+        2. fetch in batches, write as you go
+        3. build an on-disk index for O(1) lookups
     """
-      For each topic: perform ESearch → determine max length → stream-align & write"""
     for topic in self.topics:
-      print(f"[+] Aligned build for topic: {topic}")
+      print(f"[+] Raw build: {topic}")
       ids = self.search(topic)
-      print(f"\t>> Found {len(ids)} IDs")
-      if not ids:
-        continue
+      print(f"\t-> Found {len(ids)} IDs")
+      if not ids: continue
 
-      max_len = self._determine_max_len(ids)
-      print(f"\t>> Determined max sequence length: {max_len}")
+      fname = self._sanitize(topic)
+      fasta_path = os.path.join(self.out_dir, f"{fname}.fasta")
+      idx_path = os.path.join(self.out_dir, f"{fname}.idx")
 
-      self._stream_and_write(ids, max_len, topic)
-      print(f"\t>> Completed aligned database for '{topic}'")
+      # open output file once
+      with open(fasta_path, 'w', encoding='utf-8') as out_fh:
+        for i in range(0, len(ids), self.batch_size):
+          batch = ids[i:i + self.batch_size]
+          try:
+            handle = self._safe_efetch(batch)
+            # stream write
+            for line in handle:
+              out_fh.write(line)
+            out_fh.flush()
+          except Exception as e:
+            print(f"\t[Error] batch {i}-{i+len(batch)} failed: {e}")
+            continue
+          time.sleep(self._sleep)
+
+      # build on‐disk index for O(1) record lookup
+      if with_index:
+        try:
+          SeqIO.index_db(idx_path, fasta_path, "fasta")
+          print(f"\t->Built index: {idx_path}")
+        except Exception as e:
+          print(f"\t[Warning] could not build index: {e}")
+        print(f"\t->Completed raw FASTA: {fasta_path}\n")
+
+def create_index(input_dir: str, index_path: str = "combined.idx"):
+  """
+    Build a single O(1) lookup index (.idx) from all FASTA files in a directory.
+    Args:
+      input_dir: Path to directory containing .fasta or .fa files.
+      index_path: Output path for the .idx database (default: combined.idx).
+  """
+  fasta_files = []
+  for fname in os.listdir(input_dir):
+    if fname.lower().endswith(('.fasta', '.fa')):
+      fasta_files.append(os.path.join(input_dir, fname))
+
+  if not fasta_files:
+    print(f"[!] No FASTA files found in {input_dir}")
+    return
+
+  try:
+    SeqIO.index_db(index_path, fasta_files, "fasta")
+    print(f"[+] Created combined index for {len(fasta_files)} files -> {index_path}")
+  except Exception as e:
+    print(f"[!] Failed to create combined index: {e}")
 
 def convert_fasta(input_dir: str, output_dir: str, mode: str = 'csv'):
   """
