@@ -1,5 +1,9 @@
 train data/
 ncbi dataset/
+database/
+data/
+test.py
+extra.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
