@@ -3,6 +3,7 @@ from typing import List
 from Bio import Entrez, SeqIO
 from http.client import IncompleteRead
 from urllib.error import HTTPError
+import sqlite3
 import pandas as pd
 from typing import *
 
@@ -173,25 +174,63 @@ class Database:
 
 def create_index(input_dir: str, index_path: str = "combined.idx"):
   """
-    Build a single O(1) lookup index (.idx) from all FASTA files in a directory.
-    Args:
-      input_dir: Path to directory containing .fasta or .fa files.
-      index_path: Output path for the .idx database (default: combined.idx).
-  """
-  fasta_files = []
-  for fname in os.listdir(input_dir):
-    if fname.lower().endswith(('.fasta', '.fa')):
-      fasta_files.append(os.path.join(input_dir, fname))
+    Build a single O(1) lookup index (.idx) from all FASTA files in a directory,
+  skipping duplicate record IDs automatically.
 
+  Args:
+    input_dir:  Directory containing .fasta/.fa files.
+    index_path: Path to SQLite index file to create.
+  """
+  # Gathering FASTA files
+  fasta_files = [
+    os.path.join(input_dir, fn)
+    for fn in os.listdir(input_dir)
+    if fn.lower().endswith(('.fa','fasta'))
+  ]
   if not fasta_files:
-    print(f"[!] No FASTA files found in {input_dir}")
+    print(f"[!] No FASTA files found in `{input_dir}`.")
     return
 
-  try:
-    SeqIO.index_db(index_path, fasta_files, "fasta")
-    print(f"[+] Created combined index for {len(fasta_files)} files -> {index_path}")
-  except Exception as e:
-    print(f"[!] Failed to create combined index: {e}")
+  # Creating SQLite DB and table
+  conn = sqlite3.connect(index_path)
+  c = conn.cursor()
+  c.execute("""
+    CREATE TABLE IF NOT EXISTS seq_index (
+      key      TEXT PRIMARY KEY,
+      filename TEXT,
+      offset   INTEGER,
+      length   INTEGER
+    )
+  """)
+  conn.commit()
+
+  # scanning each FASTA and record offsets
+  for fasta in fasta_files:
+    print(f"[+] Indexing {fasta}")
+    with open(fasta, 'r', encoding='utf-8') as fh:
+      while True:
+        pos = fh.tell()
+        header = fh.readline()
+        if not header: break
+        if not header.startswith('>'): continue
+        seq_id = header[1:].split()[0]
+        # read sequence lines until next '>' or EOF
+        seq_len = 0
+        while True:
+          line_start = fh.tell()
+          line = fh.readline()
+          if not line or line.startswith('>'):
+            # rewind if we overshot onto next header
+            if line and line.startswith('>'):
+              fh.seek(line_start)
+            break
+          seq_len += len(line.strip())
+
+        # Inserting or ignoring duplicates
+        c.execute("INSERT OR IGNORE INTO seq_index (key,filename,offset,length) VALUES (?,?,?,?)", (seq_id, fasta, pos, seq_len))
+    conn.commit()
+  conn.close()
+  print(f"[/] Built combined index at `{index_path}`")
 
 def convert_fasta(input_dir: str, output_dir: str, mode: str = 'csv'):
   """
