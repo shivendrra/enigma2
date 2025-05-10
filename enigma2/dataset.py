@@ -11,85 +11,100 @@
         torch.tensor(): return batches of tokenized DNA datasets"""
 
 import torch
+import numpy as np
 from Bio import SeqIO
-from typing import *
-import os
-from biosaic import tokenizer, get_encodings
+from typing import List, Dict, Iterator
 
 class Dataset:
-  def __init__(self, kmer: int, index_path: str):
+  """
+  Dataset backed by an on-disk FASTA index for O(1) sequence lookup.
+
+  Functions:
+    - search(): group sequence IDs by exact length -> Dict[int, List[str]]
+    - align(): pad each group's sequences to its max length -> Dict[int, List[str]]
+    - fetch_sequence(): sliding windows from a single sequence
+    - train_test_split(): split IDs into train/test lists
+    - get_batch(): produce one-hot encoded batches [B, block_size, vocab_size]
+  """
+
+  def __init__(self, kmer: int, index_path: str, test_ratio: float = 0.25):
     if not kmer:
-      raise ValueError(f"Must provide a KMer value!")
+      raise ValueError("Must provide a kmer value!")
     if kmer > 6:
-      raise IndexError(f"KMer size till 5 supported for now!")
-    self.kmer = kmer
-    self._encoding = f"base_{self.kmer}k"
-    self._tokenizer = tokenizer(encoding=get_encodings[self._encoding])
+      raise IndexError("KMer size up to 6 supported only!")
+    self.kmer      = kmer
+    self._encoding = f"base_{kmer}k"
+    # tokenizer must expose .encode(str)->List[int] and .vocab_size
+    from biosaic import tokenizer, get_encodings
+    self._tokenizer = tokenizer(encoding=get_encodings[kmer-1])
+    self.test_ratio = test_ratio
+
+    # build or load on-disk index
     self._index = SeqIO.index_db(index_path)
-    self._data = ""
 
-  def _load_sequence(self, seq_id: str) -> str:
+  def search(self) -> Dict[int, List[str]]:
     """
-      Retrieve a single sequence by ID.
-      returns the raw DNA string"""
-    rec = self._index[seq_id]
-    return str(rec.seq)
-
-  def _list_sequences(self) -> List[str]:
-    """
-      Return all sequence IDs available in the index."""
-    return list(self._index.keys())
-
-  def align(self) -> dict:
-    """
-      Aligns & groups sequence IDs by their original length.
-      Returns a dict: {length: [seq_id, ...], ...}"""
-    groups = {}
-    for key in self._index.keys():
-      length = len(self._index[key].seq)
-      groups.setdefault(length, []).append(key)
+      Group sequence IDs by their exact length.
+    Returns: { length: [seq_id, ...], ... }."""
+    groups: Dict[int, List[str]] = {}
+    for seq_id in self._index.keys():
+      length = len(self._index[seq_id].seq)
+      groups.setdefault(length, []).append(seq_id)
     return groups
 
-  def create_batches(self, block_size: int) -> List[List[str]]:
+  def align(self) -> Dict[int, List[str]]:
     """
-      For each length group >= block_size, return its list of IDs as one batch."""
-    batches = []
-    for length, ids in self.align().items():
-      if length >= block_size:
-        batches.append(ids)
-    return batches
+      For each length group, pad (no-op since all equal) and return raw strings.
+    Returns: { length: [sequence_str, ...], ... }."""
+    aligned: Dict[int, List[str]] = {}
+    for length, ids in self.search().items():
+      seqs = []
+      for seq_id in ids:
+        seqs.append(str(self._index[seq_id].seq))
+      aligned[length] = seqs
+    return aligned
 
-  def _get_encoded_batches(self):
-    pass
-
-  def load(self, file_path: str, folder: bool=False):
-    if not os.path.isfile(file_path):
-      raise FileNotFoundError(f"{file_path} does not exist.")
-
-    if folder:
-      fasta_files = [
-        os.path.join(file_path, fn)
-        for fn in os.listdir(file_path)
-        if fn.lower().endswith(('.fa','fasta'))
-        ]
-    if not fasta_files:
-      print(f"[!] No FASTA files found in `{file_path}`.")
-    return
-
-  def train_test_split(self, ratio: float):
+  def fetch_sequence(self, seq_id: str, block_size: int, step: int = None) -> Iterator[str]:
     """
-      Splits the formatted data into training and testing sets
-      Returns:
-        A tuple (train_data, test_data) containing the split strings"""
-    split_idx = int(len(self._data) * (1 * ratio))
-    train_data = self._tokenizer.encode(self.data[:split_idx])
-    test_data = self._tokenizer.encode(self._data[split_idx:])
-    return train_data, test_data
+      Yield sliding windows of size `block_size` from sequence `seq_id`.
+    step: increment size; defaults to block_size (non-overlapping)."""
+    seq = str(self._index[seq_id].seq)
+    N   = len(seq)
+    if step is None:
+      step = block_size
+    for i in range(0, N - block_size + 1, step):
+      yield seq[i:i + block_size]
 
-  def get_batch(self, test_ratio: float, split: str, batch_size: int, block_size: int, device: torch.device= "cuda"):
-    train_data, val_data = self.train_test_split(test_ratio)
-    data = train_data if split == 'train' else val_data
-    if len(data) < block_size + 1:
-      raise ValueError("Data length is less than block size.")
-    ix = torch.randint(0, len(data) * block_size, (batch_size,))
-    X = torch.stack()
+  def train_test_split(self) -> list[str]:
+    """
+      Split the full list of seq_ids into train/test according to test_ratio."""
+    all_ids = list(self._index.keys())
+    split   = int(len(all_ids) * (1 - self.test_ratio))
+    return all_ids[:split], all_ids[split:]
+
+  def get_batch(self, split: str, batch_size: int, block_size: int, step: int = None, device: torch.device = torch.device("cpu")) -> torch.Tensor:
+    """
+      Returns one-hot encoded batch:
+        x: Tensor [batch_size, block_size, vocab_size]
+      split: "train" or "val"."""
+    # choose IDs
+    train_ids, val_ids = self.train_test_split()
+    ids = train_ids if split == "train" else val_ids
+
+    # collect one window per sequence until batch_size
+    samples = []
+    for seq_id in np.random.choice(ids, size=batch_size, replace=True):
+      # pick a random window
+      windows = list(self.fetch_sequence(seq_id, block_size, step))
+      if not windows:
+        raise ValueError(f"Sequence {seq_id} shorter than block_size")
+      subseq = np.random.choice(windows)
+      token_ids = self._tokenizer.encode(subseq)
+      oh = torch.nn.functional.one_hot(
+        torch.tensor(token_ids, dtype=torch.long),
+        num_classes=self._tokenizer.vocab_size
+      )
+      samples.append(oh)
+
+    x = torch.stack(samples).to(device) # stack into [B, block_size, vocab_size]
+    return x
