@@ -3,23 +3,23 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 
 from biosaic import tokenizer, get_encodings
-from .dataset import Dataset
+from EnigmaDB import Dataset
 from .model import Transformer, ModelConfig
 
 tokenizer = tokenizer(encoding=get_encodings[3])
 vocab_size = tokenizer.vocab_size
 
 class TrainConfig:
-  device        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
   learning_rate = 1e-4         # bumped from 1e-5
-  weight_decay  = 1e-4
-  amsgrad       = True
+  weight_decay = 1e-4
+  amsgrad = True
   warmup_epochs = 50           # linear warm‑up
-  epochs        = 2000
+  epochs = 2000
   eval_interval = 100
-  eval_iters    = 30
-  batch_size    = 6
-  block_size    = 256
+  eval_iters = 30
+  batch_size = 6
+  block_size = 256
 loss_history  = []
 
 # setup
@@ -47,8 +47,7 @@ with open(file_path, 'r', encoding='utf-8') as f:
   sequence = f.read()
   print("file opened!")
   f.close()
-dataset = Dataset(file_path, get_encodings[3], ratio=0.2)
-dataset.load(sequence)
+dataset = Dataset(kmer=4, index_path="./sequence.idx", test_ratio=0.25)
 
 @torch.no_grad()
 def estimate_loss():
@@ -57,7 +56,7 @@ def estimate_loss():
   for split in ['train', 'val']:
     losses = torch.zeros(TrainConfig.eval_iters)
     for k in range(TrainConfig.eval_iters):
-      X, Y = dataset.get_batch(split, batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device)
+      X, Y = dataset.get_batch(split, batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device, step=TrainConfig.block_size)
       x_recon, vq_loss, _ = _model(X)
       recon_loss = F.cross_entropy(x_recon.view(-1, 4), Y.view(-1, 4))
       losses[k] = (recon_loss + vq_loss).item()
@@ -69,7 +68,7 @@ import timeit
 
 start_time = timeit.default_timer()
 for epoch in range(TrainConfig.epochs):
-  xb, yb = dataset.get_batch("train", batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device)
+  xb, yb = dataset.get_batch("train", batch_size=TrainConfig.batch_size, block_size=TrainConfig.block_size, device=TrainConfig.device, step=TrainConfig.block_size)
 
   x_recon, vq_loss, _ = _model(xb)
   recon_ce  = F.cross_entropy(x_recon.view(-1,4), yb.view(-1,4))
