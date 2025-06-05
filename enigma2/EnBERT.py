@@ -129,18 +129,75 @@ class MultiHeadLatentAttention(nn.Module):
 class Expert(nn.Module):
   def __init__(self, d_model, hidden_dim, dropout, ffn_multiplier=None) -> None:
     super().__init__()
-    hidden_dim = int(2 * hidden_dim / 3)
     if ffn_multiplier is not None:
-      hidden_dim = int(ffn_multiplier * hidden_dim)
-    self.fc_up = nn.Linear(d_model, hidden_dim, bias=False)  # first layer: d_model -> hidden_dim
-    self.swiglu = SwiGLU(hidden_dim, hidden_dim)             # now, input dimension is hidden_dim
-    self.fc_down = nn.Linear(hidden_dim, d_model, bias=False)  # project back: hidden_dim -> d_model
+      hidden_dim = int(ffn_multiplier * d_model)
+    else:
+      hidden_dim = int(2 * hidden_dim / 3)
+      
+    self.fc_up = nn.Linear(d_model, hidden_dim, bias=False)
+    self.swiglu = SwiGLU(d_model, hidden_dim)  # Fixed: input should be d_model
+    self.fc_down = nn.Linear(hidden_dim, d_model, bias=False)
     self.dropout = nn.Dropout(dropout)
 
   def forward(self, x):
-    x = self.fc_up(x)        # Shape: (batch_size, hidden_dim)
-    x = self.swiglu(x)       # SwiGLU now correctly processes input of shape (batch_size, hidden_dim)
-    return self.dropout(self.fc_down(x))  # Returns: (batch_size, d_model)
+    # x shape: (batch_size, seq_len, d_model)
+    x = self.swiglu(x)       # SwiGLU processes d_model input
+    x = self.fc_down(x)      # Project back to d_model
+    return self.dropout(x)
+
+class SparseMoE(nn.Module):
+  def __init__(self, d_model, n_experts, top_k, n_ff, dropout, ffn_multiplier, capacity_factor=1.0) -> None:
+    super().__init__()
+    self.router = NoisyTopkRouter(d_model, n_experts, top_k, temperature=1.0)
+    self.experts = nn.ModuleList([
+      Expert(d_model=d_model, hidden_dim=n_ff, dropout=dropout, ffn_multiplier=ffn_multiplier)
+      for _ in range(n_experts)
+    ])
+    self.top_k = top_k
+    self.capacity_factor = capacity_factor
+    self.n_experts = n_experts
+
+  def forward(self, x):
+    batch_size, seq_len, d_model = x.shape
+    routing_probs, indices, aux_loss = self.router(x)
+    
+    # Initialize output tensor
+    final_outputs = torch.zeros_like(x)
+    
+    # Flatten for easier processing
+    flat_x = x.view(-1, d_model)
+    flat_routing_probs = routing_probs.view(-1, self.n_experts)
+    flat_indices = indices.view(-1, self.top_k)
+    
+    # Calculate expert capacity
+    tokens_per_expert = (batch_size * seq_len * self.top_k) // self.n_experts
+    expert_capacity = int(tokens_per_expert * self.capacity_factor)
+    
+    # Process each expert
+    for expert_idx, expert in enumerate(self.experts):
+      # Find tokens that should go to this expert
+      expert_mask = (flat_indices == expert_idx).any(dim=-1)
+      selected_tokens = torch.nonzero(expert_mask, as_tuple=False).squeeze(-1)
+      
+      if len(selected_tokens) == 0:
+        continue
+        
+      # Apply capacity constraint
+      if len(selected_tokens) > expert_capacity:
+        selected_tokens = selected_tokens[:expert_capacity]
+      
+      # Get inputs for this expert
+      expert_inputs = flat_x[selected_tokens]  # (num_selected, d_model)
+      expert_outputs = expert(expert_inputs.unsqueeze(1)).squeeze(1)  # (num_selected, d_model)
+      
+      # Get routing weights for selected tokens
+      routing_weights = flat_routing_probs[selected_tokens, expert_idx].unsqueeze(-1)  # (num_selected, 1)
+      weighted_outputs = expert_outputs * routing_weights
+      
+      # Scatter the outputs back
+      final_outputs.view(-1, d_model).index_add_(0, selected_tokens, weighted_outputs)
+    
+    return final_outputs, aux_loss
 
 class NoisyTopkRouter(nn.Module):
   def __init__(self, n_embed, n_experts, top_k, temperature=1.0) -> None:
@@ -238,12 +295,15 @@ class SparseMoE(nn.Module):
 class Block(nn.Module):
   def __init__(self, d_model, n_head, n_experts, top_k, n_ff, dropout, ffn_multiplier, block_size, device, n_latent, capacity_factor) -> None:
     super().__init__()
-    self.sa = MultiHeadLatentAttention(d_model, dropout, n_head, block_size, device, False, n_latent)
+    self.sa = MultiHeadLatentAttention(d_model, dropout, n_head, block_size, device, n_latent)
     self.smoe = SparseMoE(d_model, n_experts, top_k, n_ff, dropout, ffn_multiplier, capacity_factor)
     self.ln1 = RMSNorm(d_model)
     self.ln2 = RMSNorm(d_model)
+    
   def forward(self, x):
-    x = x + self.sa((self.ln1(x)))
+    # Pre-norm attention
+    x = x + self.sa(self.ln1(x))
+    # Pre-norm MoE
     x_temp, aux_loss = self.smoe(self.ln2(x))
     x = x + x_temp
     return x, aux_loss
@@ -252,11 +312,14 @@ def kaiming_init_weights(m):
   if isinstance (m, (nn.Linear)): nn.init.kaiming_normal_(m.weight)
 
 class EnBert(nn.Module):
-  def __init__(self, params: ModelArgs, vocab_size: int, block_size, lambda_aux=0.1):
+  def __init__(self, params: ModelArgs, vocab_size: int, block_size=None, lambda_aux=0.1):
     super().__init__()
+    if block_size is None:
+      block_size = params.block_size
     self.block_size = block_size
     self.d_model = params.d_model
     self.n_layers = params.n_layers
+    self.vocab_size = vocab_size
     self.token_embeddings = nn.Embedding(vocab_size, self.d_model)
     self.blocks = nn.ModuleList([
       Block(
@@ -267,7 +330,7 @@ class EnBert(nn.Module):
         n_ff=params.n_ff, 
         ffn_multiplier=params.ffn_multiplier, 
         dropout=params.dropout, 
-        block_size=params.block_size, 
+        block_size=block_size, 
         device=params.device, 
         n_latent=params.n_latent, 
         capacity_factor=params.capacity_factor
@@ -280,23 +343,27 @@ class EnBert(nn.Module):
 
   def forward(self, idx, targets=None):
     B, T = idx.size()
+    assert T <= self.block_size, f"Sequence length {T} exceeds block size {self.block_size}"
+    
     x = self.token_embeddings(idx)  # Embedding lookup: (B, T, d_model)
     total_aux_loss = 0.0
-    # propagating through each encoder block, accumulating auxiliary loss
+    
+    # Propagate through each encoder block, accumulating auxiliary loss
     for layer in self.blocks:
       x, aux_loss = layer(x)
       total_aux_loss += aux_loss
 
-    # final normalization and linear projection
+    # Final normalization and linear projection
     x = self.norm_final(x)
     logits = self.linear_final(x)  # (B, T, vocab_size)
 
-    # computing main loss if targets are provided, & add weighted aux loss
+    # Computing main loss if targets are provided, & add weighted aux loss
     loss = None
     if targets is not None:
       B, T, C = logits.shape
-      logits = logits.view(B * T, C)
-      targets = targets.view(B * T)
-      main_loss = F.cross_entropy(logits, targets)
+      logits_reshaped = logits.view(B * T, C)
+      targets_reshaped = targets.view(B * T)
+      main_loss = F.cross_entropy(logits_reshaped, targets_reshaped)
       loss = main_loss + self.lambda_aux * total_aux_loss
+      
     return logits, loss
