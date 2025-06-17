@@ -2,22 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-class ModelConfig:
-  block_size: int = 256
-  n_head: int = 12
-  n_layers: int = 12
-  d_model: int = 512
-  n_latent: int = 64
-  bias: bool = False
-  ffn_multiplier: int = 4
-  n_ff: int = ffn_multiplier * d_model
-  dropout: float = 0.2
-  norm_eps: float = 1e-5
-  num_bins: int = 4
-  kan_max: float = 1.0
-  kan_min: float = -1.0
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 class RMSNorm(nn.Module):
   def __init__(self, dim: int, eps: float = 1e-6):
     super().__init__()
@@ -87,92 +71,121 @@ class KANLayer(nn.Module):
       out[:, :, j] = acc
     return out
 
-class RoPE(nn.Module):
-  def __init__(self, head_size, block_size, device):
+def rotate_half(x):
+  x1, x2 = x.chunk(2, dim=-1)
+  return torch.cat((-x2, x1), dim=-1)
+
+def apply_rope(q, k, cos, sin):
+  q = (q * cos) + (rotate_half(q) * sin)
+  k = (k * cos) + (rotate_half(k) * sin)
+  return q, k
+
+def apply_rope_x(x, cos, sin):
+  return (x * cos) + (rotate_half(x) * sin)
+
+class MLA(torch.nn.Module):
+  def __init__(self, d_model, n_heads, max_len=1024, rope_theta=10000.0):
     super().__init__()
-    self.head_size = head_size
-    self.block_size = block_size
-    inv_freq = 1.0 / (10000 ** (torch.arange(0, head_size, 2).float() / head_size))
-    position = torch.arange(0, self.block_size, dtype=torch.float, device=device)  # (block_size,)
-    sinusoidal = torch.einsum("i,j->ij", position, inv_freq)  # Shape: (block_size, head_size // 2)
-    self.register_buffer("cos_emb", sinusoidal.cos(), persistent=False)  # (block_size, head_size // 2)
-    self.register_buffer("sin_emb", sinusoidal.sin(), persistent=False)  # (block_size, head_size // 2)
+    self.d_model, self.n_heads = d_model, n_heads
+    self.dh = d_model // n_heads
+    self.q_proj_dim, self.kv_proj_dim = d_model // 2, (2*d_model) // 3
+    self.qk_nope_dim, self.qk_rope_dim = self.dh // 2, self.dh // 2
 
-  def forward(self, q: torch.Tensor, k: torch.Tensor):
-    # splitting tensors into even and odd components
-    q1, q2 = q[..., ::2], q[..., 1::2]
-    k1, k2 = k[..., ::2], k[..., 1::2]
-    assert q.size(-1) == self.head_size, f"Query size mismatch: {q.size(-1)} != {self.head_size}"
-    assert k.size(-1) == self.head_size, f"Key size mismatch: {k.size(-1)} != {self.head_size}"
-    # retrieving embeddings for current sequence length
-    cos = self.cos_emb[:q.shape[1], :].unsqueeze(0).to(q.device)
-    sin = self.sin_emb[:q.shape[1], :].unsqueeze(0).to(q.device)
+    ## Q projections
+    # Lora
+    self.W_dq = torch.nn.Parameter(0.01*torch.randn((d_model, self.q_proj_dim)))
+    self.W_uq = torch.nn.Parameter(0.01*torch.randn((self.q_proj_dim, self.d_model)))
+    self.q_layernorm = torch.nn.LayerNorm(self.q_proj_dim)
+        
+    ## KV projections
+    # Lora
+    self.W_dkv = torch.nn.Parameter(0.01*torch.randn((d_model, self.kv_proj_dim + self.qk_rope_dim)))
+    self.W_ukv = torch.nn.Parameter(0.01*torch.randn((self.kv_proj_dim, self.d_model + (self.n_heads * self.qk_nope_dim))))
+    self.kv_layernorm = torch.nn.LayerNorm(self.kv_proj_dim)
 
-    # applying rotations
-    q_rot = torch.cat([q1 * cos - q2 * sin, q1 * sin + q2 * cos], dim=-1)
-    k_rot = torch.cat([k1 * cos - k2 * sin, k1 * sin + k2 * cos], dim=-1)
-    return q_rot, k_rot
+    # output projection
+    self.W_o = torch.nn.Parameter(0.01*torch.randn((d_model, d_model)))
 
-class LatentHead(nn.Module):
-  def __init__(self, head_size, d_model, block_size, latent_dim, dropout, device, bias=False):
-    super().__init__()
-    if latent_dim is None:
-      latent_dim = max(1, head_size // 2)
-    self.head_size = head_size
-    self.device = device
-    self.w_query = nn.Linear(d_model, head_size, bias=bias)
-    
-    # for keys: decomposing the proj into two parts: wa_key, wb_key
-    self.wa_key = nn.Linear(d_model, latent_dim, bias=bias)
-    self.wb_key = nn.Linear(latent_dim, head_size, bias=bias)
+    # RoPE
+    self.max_seq_len = max_len
+    self.rope_theta = rope_theta
 
-    # for values: similar decomposing the proj into two parts: wa_value, wb_value
-    self.wa_value = nn.Linear(d_model, latent_dim, bias=bias)
-    self.wb_value = nn.Linear(latent_dim, head_size, bias=bias)
+    # https://github.com/lucidrains/rotary-embedding-torch/tree/main
+    # visualize emb later to make sure it looks ok
+    # we do self.dh here instead of self.qk_rope_dim because its better
+    freqs = 1.0 / (rope_theta ** (torch.arange(0, self.dh, 2).float() / self.dh))
+    emb = torch.outer(torch.arange(self.max_seq_len).float(), freqs)
+    cos_cached = emb.cos()[None, None, :, :]
+    sin_cached = emb.sin()[None, None, :, :]
 
-    self.dropout = nn.Dropout(dropout)
-    self.pos_embd = RoPE(head_size, block_size, device)
-    self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+    # https://pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.register_buffer
+    # This is like a parameter but its a constant so we can use register_buffer
+    self.register_buffer("cos_cached", cos_cached)
+    self.register_buffer("sin_cached", sin_cached)
 
-  def forward(self, x: torch.Tensor):
-    B, T, C = x.shape
-    
-    w_query = self.w_query(x)  # (B, T, head_size)
-    latent_key, latent_value = self.wa_key(x), self.wa_value(x)  # (B, T, latent_dim)
-    # expanding the latent representations to full key & values
-    key, value = self.wb_key(latent_key), self.wb_value(latent_value)  # (B, T, head_size)
+  def forward(self, x, kv_cache=None, past_length=0):
+    B, S, D = x.size()
 
-    w_query, key = self.pos_embd(w_query, key)  # applying Rotary PosEmbedds
-    scores = torch.matmul(w_query, key.transpose(-2, -1)) / (self.head_size ** 0.5)  # Fixed scaling
+    # Q Projections
+    compressed_q = x @ self.W_dq
+    compressed_q = self.q_layernorm(compressed_q)
+    Q = compressed_q @ self.W_uq
+    Q = Q.view(B, -1, self.n_heads, self.dh).transpose(1,2)
+    Q, Q_for_rope = torch.split(Q, [self.qk_nope_dim, self.qk_rope_dim], dim=-1)
 
-    # Dynamic causal mask handling
-    if T > self.tril.size(0):
-      new_tril = torch.tril(torch.ones(T, T, device=self.device))
-      self.register_buffer('tril', new_tril)
-    
-    scores = scores.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-    scores = F.softmax(scores, dim=-1)
-    scores = self.dropout(scores)  # applying dropout after softmax
-    out = torch.matmul(scores, value)
-    return out
+    # Q Decoupled RoPE
+    cos_q = self.cos_cached[:, :, past_length:past_length+S, :self.qk_rope_dim//2].repeat(1, 1, 1, 2)
+    sin_q = self.sin_cached[:, :, past_length:past_length+S, :self.qk_rope_dim//2].repeat(1, 1, 1, 2)
+    Q_for_rope = apply_rope_x(Q_for_rope, cos_q, sin_q)
 
-class MultiHeadLatentAttention(nn.Module):
-  def __init__(self, d_model, dropout, n_head, block_size, device, bias=False, latent_dim=None, projection_bins=4):
-    head_size = d_model // n_head
-    super().__init__()
-    self.heads = nn.ModuleList([
-      LatentHead(head_size, d_model, block_size, latent_dim, dropout, device, bias) 
-      for _ in range(n_head)
-    ])
-    self.proj = KANLayer(d_model, projection_bins)
-    self.dropout = nn.Dropout(dropout)
+    # KV Projections
+    if kv_cache is None:
+      compressed_kv = x @ self.W_dkv
+      KV_for_lora, K_for_rope = torch.split(compressed_kv, [self.kv_proj_dim, self.qk_rope_dim], dim=-1)
+      KV_for_lora = self.kv_layernorm(KV_for_lora)
+    else:
+      new_kv = x @ self.W_dkv
+      compressed_kv = torch.cat([kv_cache, new_kv], dim=1)
+      new_kv, new_K_for_rope = torch.split(new_kv, [self.kv_proj_dim, self.qk_rope_dim], dim=-1)
+      old_kv, old_K_for_rope = torch.split(kv_cache, [self.kv_proj_dim, self.qk_rope_dim], dim=-1)
+      new_kv = self.kv_layernorm(new_kv)
+      old_kv = self.kv_layernorm(old_kv)
+      KV_for_lora = torch.cat([old_kv, new_kv], dim=1)
+      K_for_rope = torch.cat([old_K_for_rope, new_K_for_rope], dim=1)
+            
 
-  def forward(self, x: torch.Tensor):
-    # x: [B, T, d_model]
-    head_outs = [h(x) for h in self.heads]  # each [B, T, head_size]
-    concat = torch.cat(head_outs, dim=-1)  # [B, T, d_model]
-    projected = self.proj(concat)  # KAN-based projection
-    return self.dropout(projected)
+      KV = KV_for_lora @ self.W_ukv
+      KV = KV.view(B, -1, self.n_heads, self.dh+self.qk_nope_dim).transpose(1,2)
+      K, V = torch.split(KV, [self.qk_nope_dim, self.dh], dim=-1)
+      S_full = K.size(2)        
+
+      # K Rope
+      K_for_rope = K_for_rope.view(B, -1, 1, self.qk_rope_dim).transpose(1,2)
+      cos_k = self.cos_cached[:, :, :S_full, :self.qk_rope_dim//2].repeat(1, 1, 1, 2)
+      sin_k = self.sin_cached[:, :, :S_full, :self.qk_rope_dim//2].repeat(1, 1, 1, 2)
+      K_for_rope = apply_rope_x(K_for_rope, cos_k, sin_k)
+
+      # apply position encoding to each head
+      K_for_rope = K_for_rope.repeat(1, self.n_heads, 1, 1)
+
+      # split into multiple heads
+      q_heads = torch.cat([Q, Q_for_rope], dim=-1)
+      k_heads = torch.cat([K, K_for_rope], dim=-1)
+      v_heads = V # already reshaped before the split
+
+      # make attention mask
+      mask = torch.ones((S,S_full), device=x.device)
+      mask = torch.tril(mask, diagonal=past_length)
+      mask = mask[None, None, :, :]
+
+      sq_mask = mask == 1
+      # attention
+      x = torch.nn.functional.scaled_dot_product_attention(q_heads, k_heads, v_heads, attn_mask=sq_mask)
+      x = x.transpose(1, 2).reshape(B, S, D)
+
+      # apply projection
+      x = x @ self.W_o.T
+      return x, compressed_kv
 
 class FeedForward(nn.Module):
   def __init__(self, d_model, dropout, num_bins=6, hidden_dim=None, ffn_multiplier=None):
@@ -197,18 +210,9 @@ class FeedForward(nn.Module):
     return self.projection(self.net(x))
 
 class DecoderBlock(nn.Module):
-  def __init__(self, d_model: int, block_size: int, num_bins: int, n_head: int, norm_eps: float, dropout: float, latent_dim: int, projection_bins: int, bias: bool, device: str, n_ff: int = None, ffn_multiplier: int = None):
+  def __init__(self, d_model: int, block_size: int, num_bins: int, n_heads: int, norm_eps: float, dropout: float, latent_dim: int, projection_bins: int, bias: bool, device: str, n_ff: int = None, ffn_multiplier: int = None):
     super().__init__()
-    self.self_att = MultiHeadLatentAttention(
-      n_head=n_head, 
-      d_model=d_model, 
-      dropout=dropout, 
-      block_size=block_size, 
-      device=device, 
-      latent_dim=latent_dim, 
-      bias=bias, 
-      projection_bins=projection_bins
-    )
+    self.self_att = MLA(d_model, n_heads, block_size)
     self.ffwd = FeedForward(d_model, dropout, num_bins, n_ff, ffn_multiplier)
     self.dropout = nn.Dropout(dropout)
     self.norm1 = RMSNorm(d_model, eps=norm_eps)  # Added separate norm layers
@@ -224,7 +228,7 @@ class DecoderBlock(nn.Module):
     return x
 
 class Transformer(nn.Module):
-  def __init__(self, params: ModelConfig, vocab_size: int, block_size: int = None):
+  def __init__(self, params, vocab_size: int, block_size: int = None):
     super().__init__()
     if block_size is None:
       block_size = params.block_size
@@ -236,7 +240,7 @@ class Transformer(nn.Module):
         d_model=params.d_model,
         block_size=block_size,
         num_bins=params.num_bins,
-        n_head=params.n_head,
+        n_heads=params.n_heads,
         norm_eps=params.norm_eps,
         dropout=params.dropout,
         latent_dim=params.n_latent,
@@ -256,11 +260,11 @@ class Transformer(nn.Module):
 
   def _init_weights(self, module):
     if isinstance(module, nn.Linear):
-      torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+      torch.nn.init.kaiming_uniform_(module.weight, mean=0.0, std=0.05)
       if module.bias is not None:
         torch.nn.init.zeros_(module.bias)
     elif isinstance(module, nn.Embedding):
-      torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+      torch.nn.init.sparse_(module.weight, mean=0.0, std=0.05)
 
   def forward(self, idx: torch.Tensor, targets: torch.Tensor = None):
     B, T = idx.shape

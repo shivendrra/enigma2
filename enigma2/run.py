@@ -2,12 +2,12 @@ import torch
 from torch.nn import functional as F
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 
-from biosaic import tokenizer, get_encodings
+from biosaic import Tokenizer
 from EnigmaDB import Dataset
-from .model import Transformer, ModelConfig
+from .model import Transformer
 
-tokenizer = tokenizer(encoding=get_encodings[3])
-vocab_size = tokenizer.vocab_size
+tokenizer = Tokenizer(mode="dna", kmer=4)
+vocab_size = tokenizer._tokenizer.vocab_size
 
 class TrainConfig:
   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
