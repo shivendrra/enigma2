@@ -1,369 +1,407 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import math
 
 class ModelArgs:
-  d_model:int = 1024
-  n_layers:int = 12
-  n_heads:int = 18
-  ffn_multiplier:int = 4
-  n_ff:int = ffn_multiplier * d_model
-  n_latent:int = 64
-  dropout:float = 0.2
-  norm_eps:float = 1e-5
-  block_size:int = 1024
-  n_experts:int = 4
-  top_k:int = 2
-  temperature: float = 0.8
-  capacity_factor:int = 2
+  d_model: int = 768  # BERT-base hidden size
+  n_layers: int = 12  # BERT-base layers
+  n_heads: int = 12   # BERT-base attention heads
+  ffn_multiplier: int = 4
+  n_ff: int = ffn_multiplier * d_model
+  dropout: float = 0.1  # BERT dropout
+  norm_eps: float = 1e-12  # BERT layer norm epsilon
+  max_position_embeddings: int = 512  # BERT max sequence length
+  n_experts: int = 4
+  top_k: int = 2
+  capacity_factor: int = 2
+  vocab_size: int = 30522  # BERT vocab size
+  type_vocab_size: int = 2  # BERT token type embeddings
   device: str = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class RMSNorm(nn.Module):
-  def __init__(self, dim:int, eps:float=1e-5):
+class LayerNorm(nn.Module):
+  def __init__(self, hidden_size, eps=1e-12):
     super().__init__()
-    self.eps, self.weight = eps, nn.Parameter(torch.ones(dim))
-  def _norm(self, x):
-    return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+    self.weight = nn.Parameter(torch.ones(hidden_size))
+    self.bias = nn.Parameter(torch.zeros(hidden_size))
+    self.variance_epsilon = eps
+
+  def forward(self, hidden_states):
+    u = hidden_states.mean(-1, keepdim=True)
+    s = (hidden_states - u).pow(2).mean(-1, keepdim=True)
+    hidden_states = (hidden_states - u) / torch.sqrt(s + self.variance_epsilon)
+    return self.weight * hidden_states + self.bias
+
+class GELU(nn.Module):
   def forward(self, x):
-    out = self._norm(x.float()).type_as(x)
-    return out * self.weight
+    return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
 
-class SwiGLU(nn.Module):
-  """
-    swiglu activation function
-      SwiGLU(x,W,V,b,c,b) = Swish b(xW + b) * (xV + c)
-    paper: https://paperswithcode.com/method/swiglu
-  """
-  def __init__(self, in_dim, hidden_dim):
+def linear_attention_kernel(q, k, v, eps=1e-6):
+  # Apply feature map (ELU + 1 for positive features)
+  q_feat = F.elu(q) + 1
+  k_feat = F.elu(k) + 1
+
+  # Compute KV matrix: [B, H, D, D]
+  kv = torch.einsum('bhsd,bhse->bhde', k_feat, v)
+  k_sum = k_feat.sum(dim=2)  # Compute normalizer: [B, H, D]
+
+  # Compute output: [B, H, S, D]
+  numerator = torch.einsum('bhsd,bhde->bhse', q_feat, kv)
+  denominator = torch.einsum('bhsd,bhd->bhs', q_feat, k_sum)
+
+  # Avoid division by zero
+  denominator = torch.clamp(denominator, min=eps)
+  output = numerator / denominator.unsqueeze(-1)
+  return output
+
+class BertLinearSelfAttention(nn.Module):
+  def __init__(self, config):
     super().__init__()
-    # project from in_dim to 2 * hidden_dim
-    self.proj = nn.Linear(in_dim, 2 * hidden_dim, bias=False)
-  
-  def forward(self, x):
-    # x: [batch, ..., in_dim]
-    x_proj = self.proj(x)            # [batch, ..., 2 * hidden_dim]
-    x1, x2 = x_proj.chunk(2, dim=-1)  # each [batch, ..., hidden_dim]
-    return F.silu(x1) * x2
+    if config.d_model % config.n_heads != 0:
+      raise ValueError(f"Hidden size ({config.d_model}) must be divisible by number of heads ({config.n_heads})")
 
-class RoPE(nn.Module):
-  def __init__(self, head_size, block_size, device):
+    self.num_attention_heads = config.n_heads
+    self.attention_head_size = int(config.d_model / config.n_heads)
+    self.all_head_size = self.num_attention_heads * self.attention_head_size
+
+    self.query = nn.Linear(config.d_model, self.all_head_size)
+    self.key = nn.Linear(config.d_model, self.all_head_size)
+    self.value = nn.Linear(config.d_model, self.all_head_size)
+
+    self.dropout = nn.Dropout(config.dropout)
+
+  def transpose_for_scores(self, x):
+    new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+    x = x.view(*new_x_shape)
+    return x.permute(0, 2, 1, 3)
+
+  def forward(self, hidden_states, attention_mask=None):
+    # Generate Q, K, V
+    query_layer = self.transpose_for_scores(self.query(hidden_states))
+    key_layer = self.transpose_for_scores(self.key(hidden_states))
+    value_layer = self.transpose_for_scores(self.value(hidden_states))
+
+    # Apply linear attention
+    attention_output = linear_attention_kernel(query_layer, key_layer, value_layer)
+
+    # Reshape back to [B, S, D]
+    attention_output = attention_output.permute(0, 2, 1, 3).contiguous()
+    new_context_layer_shape = attention_output.size()[:-2] + (self.all_head_size,)
+    attention_output = attention_output.view(*new_context_layer_shape)
+
+    return attention_output
+
+class BertSelfOutput(nn.Module):
+  def __init__(self, config):
     super().__init__()
-    self.head_size = head_size
-    self.block_size = block_size
-    inv_freq = 1.0 / (10000 ** (torch.arange(0, head_size, 2).float() / head_size))
-    position = torch.arange(0, self.block_size, dtype=torch.float, device=device)  # (block_size,)
-    sinusoidal = torch.einsum("i,j->ij", position, inv_freq)  # Shape: (block_size, head_size // 2)
-    self.register_buffer("cos_emb", sinusoidal.cos(), persistent=False)  # (block_size, head_size // 2)
-    self.register_buffer("sin_emb", sinusoidal.sin(), persistent=False)  # (block_size, head_size // 2)
+    self.dense = nn.Linear(config.d_model, config.d_model)
+    self.LayerNorm = LayerNorm(config.d_model, eps=config.norm_eps)
+    self.dropout = nn.Dropout(config.dropout)
 
-  def forward(self, q, k):
-    # spliting tensors into even and odd components
-    q1, q2 = q[..., ::2], q[..., 1::2]
-    k1, k2 = k[..., ::2], k[..., 1::2]
-    assert q.size(-1) == self.head_size, f"Query size mismatch: {q.size(-1)} != {self.head_size}"
-    assert k.size(-1) == self.head_size, f"Key size mismatch: {k.size(-1)} != {self.head_size}"
-    # retrieving embeddings for current sequence length
-    cos = self.cos_emb[:q.shape[1], :].unsqueeze(0).to(q.device)
-    sin = self.sin_emb[:q.shape[1], :].unsqueeze(0).to(q.device)
+  def forward(self, hidden_states, input_tensor):
+    hidden_states = self.dense(hidden_states)
+    hidden_states = self.dropout(hidden_states)
+    hidden_states = self.LayerNorm(hidden_states + input_tensor)
+    return hidden_states
 
-    # applying rotations
-    q_rot = torch.cat([q1 * cos - q2 * sin, q1 * sin + q2 * cos], dim=-1)
-    k_rot = torch.cat([k1 * cos - k2 * sin, k1 * sin + k2 * cos], dim=-1)
-    return q_rot, k_rot
-
-class LatentHead(nn.Module):
-  """
-    Multi-Query Latent Attention
-    discussed in paper by deepseek: https://arxiv.org/pdf/2502.07864
-  """
-  def __init__(self, head_size, d_model, dropout, block_size, device, latent_dim=None):
+class BertAttention(nn.Module):
+  def __init__(self, config):
     super().__init__()
-    # Default latent dimension: compress to half of head_size if not provided
-    if latent_dim is None:
-      latent_dim = max(1, head_size // 2)
-    self.query = nn.Linear(d_model, head_size, bias=True)
+    self.self = BertLinearSelfAttention(config)
+    self.output = BertSelfOutput(config)
 
-    # For keys: decompose the projection into two parts: Wa_K and Wb_K
-    self.wa_key = nn.Linear(d_model, latent_dim, bias=False)
-    self.wb_key = nn.Linear(latent_dim, head_size, bias=False)
-
-    # For values: similar decomposition into Wa_V and Wb_V
-    self.wa_value = nn.Linear(d_model, latent_dim, bias=False)
-    self.wb_value = nn.Linear(latent_dim, head_size, bias=False)
-
-    self.dropout = nn.Dropout(dropout)
-    self.pos_emb = RoPE(head_size, block_size, device)    # Rotary Positional Embedding layer remains the same
-
-  def forward(self, x):
-    B, T, C = x.shape
-
-    # Compute query, latent key and latent value
-    query = self.query(x)                      # (B, T, head_size)
-    latent_key = self.wa_key(x)                # (B, T, latent_dim)
-    latent_value = self.wa_value(x)            # (B, T, latent_dim)
-
-    # Expand the latent representations to full key and value
-    key = self.wb_key(latent_key)              # (B, T, head_size)
-    value = self.wb_value(latent_value)          # (B, T, head_size)
-    query, key = self.pos_emb(query, key)     # cpply Rotary Positional Embedding to query and key
-    scores = torch.matmul(query, key.transpose(-2, -1)) / (key.shape[-1] ** 0.5)    # compute scaled dot-product attention scores
-
-    attention = self.dropout(F.softmax(scores, dim=-1))   # apply softmax and dropout
-    output = torch.matmul(attention, value)    # compute the output as the weighted sum of the value vectors
-    return output
-
-class MultiHeadLatentAttention(nn.Module):
-  def __init__(self, d_model, dropout, n_head, block_size, device, latent_dim=None):
-    head_size = d_model // n_head
-    super().__init__()
-    self.heads = nn.ModuleList(
-      [LatentHead(head_size, d_model, dropout, block_size, device, latent_dim) for _ in range(n_head)]
-    )
-    self.proj = nn.Linear(n_head * head_size, d_model)
-    self.dropout = nn.Dropout(dropout)
-  def forward(self, x):
-    out = torch.cat([h(x) for h in self.heads], dim=-1)
-    out = self.dropout(self.proj(out))
-    return out
+  def forward(self, hidden_states, attention_mask=None):
+    self_outputs = self.self(hidden_states, attention_mask)
+    attention_output = self.output(self_outputs, hidden_states)
+    return attention_output
 
 class Expert(nn.Module):
-  def __init__(self, d_model, hidden_dim, dropout, ffn_multiplier=None) -> None:
+  def __init__(self, config):
     super().__init__()
-    if ffn_multiplier is not None:
-      hidden_dim = int(ffn_multiplier * d_model)
-    else:
-      hidden_dim = int(2 * hidden_dim / 3)
-      
-    self.fc_up = nn.Linear(d_model, hidden_dim, bias=False)
-    self.swiglu = SwiGLU(d_model, hidden_dim)  # Fixed: input should be d_model
-    self.fc_down = nn.Linear(hidden_dim, d_model, bias=False)
-    self.dropout = nn.Dropout(dropout)
+    self.dense = nn.Linear(config.d_model, config.n_ff)
+    self.intermediate_act_fn = GELU()
+    self.output_dense = nn.Linear(config.n_ff, config.d_model)
+    self.dropout = nn.Dropout(config.dropout)
 
-  def forward(self, x):
-    # x shape: (batch_size, seq_len, d_model)
-    x = self.swiglu(x)       # SwiGLU processes d_model input
-    x = self.fc_down(x)      # Project back to d_model
-    return self.dropout(x)
-
-class SparseMoE(nn.Module):
-  def __init__(self, d_model, n_experts, top_k, n_ff, dropout, ffn_multiplier, capacity_factor=1.0) -> None:
-    super().__init__()
-    self.router = NoisyTopkRouter(d_model, n_experts, top_k, temperature=1.0)
-    self.experts = nn.ModuleList([
-      Expert(d_model=d_model, hidden_dim=n_ff, dropout=dropout, ffn_multiplier=ffn_multiplier)
-      for _ in range(n_experts)
-    ])
-    self.top_k = top_k
-    self.capacity_factor = capacity_factor
-    self.n_experts = n_experts
-
-  def forward(self, x):
-    batch_size, seq_len, d_model = x.shape
-    routing_probs, indices, aux_loss = self.router(x)
-    
-    # Initialize output tensor
-    final_outputs = torch.zeros_like(x)
-    
-    # Flatten for easier processing
-    flat_x = x.view(-1, d_model)
-    flat_routing_probs = routing_probs.view(-1, self.n_experts)
-    flat_indices = indices.view(-1, self.top_k)
-    
-    # Calculate expert capacity
-    tokens_per_expert = (batch_size * seq_len * self.top_k) // self.n_experts
-    expert_capacity = int(tokens_per_expert * self.capacity_factor)
-    
-    # Process each expert
-    for expert_idx, expert in enumerate(self.experts):
-      # Find tokens that should go to this expert
-      expert_mask = (flat_indices == expert_idx).any(dim=-1)
-      selected_tokens = torch.nonzero(expert_mask, as_tuple=False).squeeze(-1)
-      
-      if len(selected_tokens) == 0:
-        continue
-        
-      # Apply capacity constraint
-      if len(selected_tokens) > expert_capacity:
-        selected_tokens = selected_tokens[:expert_capacity]
-      
-      # Get inputs for this expert
-      expert_inputs = flat_x[selected_tokens]  # (num_selected, d_model)
-      expert_outputs = expert(expert_inputs.unsqueeze(1)).squeeze(1)  # (num_selected, d_model)
-      
-      # Get routing weights for selected tokens
-      routing_weights = flat_routing_probs[selected_tokens, expert_idx].unsqueeze(-1)  # (num_selected, 1)
-      weighted_outputs = expert_outputs * routing_weights
-      
-      # Scatter the outputs back
-      final_outputs.view(-1, d_model).index_add_(0, selected_tokens, weighted_outputs)
-    
-    return final_outputs, aux_loss
+  def forward(self, hidden_states):
+    hidden_states = self.dense(hidden_states)
+    hidden_states = self.intermediate_act_fn(hidden_states)
+    hidden_states = self.output_dense(hidden_states)
+    hidden_states = self.dropout(hidden_states)
+    return hidden_states
 
 class NoisyTopkRouter(nn.Module):
-  def __init__(self, n_embed, n_experts, top_k, temperature=1.0) -> None:
+  def __init__(self, config):
     super().__init__()
-    self.top_k = top_k
-    self.temperature = temperature
-    self.n_experts = n_experts
-    # Linear layer for routing logits
-    self.topkroute_linear = nn.Linear(n_embed, n_experts)
-    self.noise_linear = nn.Linear(n_embed, n_experts)
+    self.top_k = min(config.top_k, config.n_experts)
+    self.n_experts = config.n_experts
+    self.topkroute_linear = nn.Linear(config.d_model, config.n_experts, bias=False)
+    self.noise_linear = nn.Linear(config.d_model, config.n_experts, bias=False)
 
-  def forward(self, x):
-    """
-      Args:
-        x: Tensor of shape (batch_size, seq_len, n_embed)
-      Returns:
-        router_output: Softmax probabilities for each expert per token.
-        indices: The top k expert indices chosen for each token.
-        aux_loss: Auxiliary load balancing loss.
-    """
-    # computing logits and noise scale
-    logits = self.topkroute_linear(x)
-    noise_logits = self.noise_linear(x)
-    noise_scale = F.softplus(noise_logits)
-    noise = torch.randn_like(logits) * noise_scale
-    noisy_logits = logits + noise
-
-    # Temperature scaling before applying top-k selection and softmax
-    scaled_logits = noisy_logits / self.temperature
-
-    # Get top_k logits and their indices along the expert dimension
-    top_k_logits, indices = scaled_logits.topk(self.top_k, dim=-1)
-    zeros = torch.full_like(scaled_logits, float('-inf'))
+  def forward(self, hidden_states):
+    logits = self.topkroute_linear(hidden_states)
+    
+    if self.training and self.n_experts > 1:
+      noise_logits = self.noise_linear(hidden_states)
+      noise = torch.randn_like(logits) * F.softplus(noise_logits.clamp(max=10.0))
+      noisy_logits = logits + noise
+    else:
+      noisy_logits = logits
+    
+    if self.n_experts == 1:
+      top_k_logits = noisy_logits
+      indices = torch.zeros_like(noisy_logits, dtype=torch.long)
+    else:
+      top_k_logits, indices = noisy_logits.topk(self.top_k, dim=-1)
+    
+    zeros = torch.full_like(noisy_logits, float('-inf'))
     sparse_logits = zeros.scatter(-1, indices, top_k_logits)
-
     router_output = F.softmax(sparse_logits, dim=-1)
-
-    # Compute auxiliary load balancing loss:
-    # Average the routing probabilities over the batch and sequence dimensions.
-    # This encourages a uniform distribution (target = 1 / n_experts for each expert).
-    router_prob = router_output.mean(dim=[0, 1])  # shape: (n_experts,)
-    target = 1.0 / self.n_experts
-    aux_loss = torch.sum((router_prob - target) ** 2)
-
-    return router_output, indices, aux_loss
+    
+    return router_output, indices
 
 class SparseMoE(nn.Module):
-  def __init__(self, d_model, n_experts, top_k, n_ff, dropout, ffn_multiplier, capacity_factor=1.0) -> None:
+  def __init__(self, config):
     super().__init__()
-    self.router = NoisyTopkRouter(d_model, n_experts, top_k, temperature=1.0)
-    self.experts = nn.ModuleList([
-      Expert(d_model=d_model, hidden_dim=n_ff, dropout=dropout, ffn_multiplier=ffn_multiplier)
-      for _ in range(n_experts)
-    ])
-    self.top_k = top_k
-    self.capacity_factor = capacity_factor
-    self.n_experts = n_experts
-
-  def forward(self, x):
-    batch_size, seq_len, _ = x.shape
-    # Get routing distribution and indices along with the auxiliary loss.
-    routing_probs, indices, aux_loss = self.router(x)
-    final_outputs = torch.zeros_like(x)
-
-    # Flatten tensors for easier indexing.
-    flat_x = x.view(-1, x.size(-1))
-    flat_routing_probs = routing_probs.view(-1, routing_probs.size(-1))
+    self.n_experts = max(1, config.n_experts)
+    self.top_k = min(config.top_k, self.n_experts)
+    self.capacity_factor = config.capacity_factor
     
-    tokens_total = batch_size * seq_len * self.top_k
-    expert_capacity = int((tokens_total / self.n_experts) * self.capacity_factor)
-    updates = torch.zeros_like(flat_x)
+    self.router = NoisyTopkRouter(config)
+    self.experts = nn.ModuleList([Expert(config) for _ in range(self.n_experts)])
 
-    # Process each expert individually.
-    for i, expert in enumerate(self.experts):
-      # Identify tokens assigned to expert i (at least one of the top k choices)
-      expert_mask = (indices == i).any(dim=-1)
-      flat_mask = expert_mask.view(-1)
-      selected_indices = torch.nonzero(flat_mask).squeeze(-1)
+  def forward(self, hidden_states):
+    batch_size, seq_len, d_model = hidden_states.shape
+    original_shape = hidden_states.shape
+    
+    if self.n_experts == 1:
+      return self.experts[0](hidden_states)
+    
+    flat_hidden = hidden_states.view(-1, d_model)
+    gating_output, indices = self.router(hidden_states)
+    flat_gating_output = gating_output.view(-1, self.n_experts)
+    flat_indices = indices.view(-1, self.top_k)
+
+    final_output = torch.zeros_like(flat_hidden)
+    
+    total_tokens = flat_hidden.size(0)
+    tokens_per_expert = max(1, (total_tokens * self.top_k) // self.n_experts)
+    expert_capacity = max(8, int(tokens_per_expert * self.capacity_factor))
+
+    for expert_idx in range(self.n_experts):
+      expert_mask = (flat_indices == expert_idx).any(dim=-1)
+      expert_tokens = torch.nonzero(expert_mask, as_tuple=False).squeeze(-1)
+
+      if expert_tokens.numel() == 0:
+        continue
+        
+      if expert_tokens.numel() > expert_capacity:
+        perm = torch.randperm(expert_tokens.numel(), device=expert_tokens.device)
+        expert_tokens = expert_tokens[perm[:expert_capacity]]
       
-      if selected_indices.numel() > expert_capacity:
-        limited_indices = selected_indices[:expert_capacity]
-      else:
-        limited_indices = selected_indices
+      expert_tokens = expert_tokens[expert_tokens < flat_hidden.size(0)]
+      if expert_tokens.numel() == 0:
+        continue
+      
+      try:
+        expert_input = flat_hidden[expert_tokens]
+        expert_output = self.experts[expert_idx](expert_input)
+        
+        expert_gating = flat_gating_output[expert_tokens]
+        gating_weights = expert_gating[:, expert_idx:expert_idx+1]
+        weighted_output = expert_output * gating_weights
+        
+        final_output.scatter_add_(0, expert_tokens.unsqueeze(-1).expand_as(weighted_output), weighted_output)
+      except Exception:
+        continue
 
-      if limited_indices.numel() > 0:
-        expert_inputs = flat_x[limited_indices]
-        expert_output = expert(expert_inputs)
-        gating_scores = flat_routing_probs[limited_indices, i].unsqueeze(1)
-        weighted_outputs = expert_output * gating_scores
-        updates.index_add_(0, limited_indices, weighted_outputs)
+    return final_output.view(original_shape)
 
-    final_outputs += updates.view(batch_size, seq_len, -1)
-    return final_outputs, aux_loss
-
-class Block(nn.Module):
-  def __init__(self, d_model, n_head, n_experts, top_k, n_ff, dropout, ffn_multiplier, block_size, device, n_latent, capacity_factor) -> None:
+class BertIntermediate(nn.Module):
+  def __init__(self, config):
     super().__init__()
-    self.sa = MultiHeadLatentAttention(d_model, dropout, n_head, block_size, device, n_latent)
-    self.smoe = SparseMoE(d_model, n_experts, top_k, n_ff, dropout, ffn_multiplier, capacity_factor)
-    self.ln1 = RMSNorm(d_model)
-    self.ln2 = RMSNorm(d_model)
-    
-  def forward(self, x):
-    # Pre-norm attention
-    x = x + self.sa(self.ln1(x))
-    # Pre-norm MoE
-    x_temp, aux_loss = self.smoe(self.ln2(x))
-    x = x + x_temp
-    return x, aux_loss
+    self.moe = SparseMoE(config)
 
-def kaiming_init_weights(m):
-  if isinstance (m, (nn.Linear)): nn.init.kaiming_normal_(m.weight)
+  def forward(self, hidden_states):
+    return self.moe(hidden_states)
 
-class EnBert(nn.Module):
-  def __init__(self, params: ModelArgs, vocab_size: int, block_size=None, lambda_aux=0.1):
+class BertOutput(nn.Module):
+  def __init__(self, config):
     super().__init__()
-    if block_size is None:
-      block_size = params.block_size
-    self.block_size = block_size
-    self.d_model = params.d_model
-    self.n_layers = params.n_layers
-    self.vocab_size = vocab_size
-    self.token_embeddings = nn.Embedding(vocab_size, self.d_model)
-    self.blocks = nn.ModuleList([
-      Block(
-        d_model=params.d_model, 
-        n_head=params.n_heads, 
-        n_experts=params.n_experts, 
-        top_k=params.top_k, 
-        n_ff=params.n_ff, 
-        ffn_multiplier=params.ffn_multiplier, 
-        dropout=params.dropout, 
-        block_size=block_size, 
-        device=params.device, 
-        n_latent=params.n_latent, 
-        capacity_factor=params.capacity_factor
-      ) for _ in range(self.n_layers)
-    ])
-    self.norm_final = RMSNorm(self.d_model, params.norm_eps)
-    self.linear_final = nn.Linear(self.d_model, vocab_size, bias=False)
-    self.lambda_aux = lambda_aux
-    self.apply(kaiming_init_weights)
+    self.LayerNorm = LayerNorm(config.d_model, eps=config.norm_eps)
+    self.dropout = nn.Dropout(config.dropout)
 
-  def forward(self, idx, targets=None):
-    B, T = idx.size()
-    assert T <= self.block_size, f"Sequence length {T} exceeds block size {self.block_size}"
+  def forward(self, hidden_states, input_tensor):
+    hidden_states = self.dropout(hidden_states)
+    hidden_states = self.LayerNorm(hidden_states + input_tensor)
+    return hidden_states
+
+class BertLayer(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.attention = BertAttention(config)
+    self.intermediate = BertIntermediate(config)
+    self.output = BertOutput(config)
+
+  def forward(self, hidden_states, attention_mask=None):
+    attention_output = self.attention(hidden_states, attention_mask)
+    intermediate_output = self.intermediate(attention_output)
+    layer_output = self.output(intermediate_output, attention_output)
+    return layer_output
+
+class BertEncoder(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.n_layers)])
+
+  def forward(self, hidden_states, attention_mask=None):
+    for layer_module in self.layer:
+      hidden_states = layer_module(hidden_states, attention_mask)
+    return hidden_states
+
+class BertEmbeddings(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.word_embeddings = nn.Embedding(config.vocab_size, config.d_model, padding_idx=0)
+    self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.d_model)
+    self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.d_model)
+
+    self.LayerNorm = LayerNorm(config.d_model, eps=config.norm_eps)
+    self.dropout = nn.Dropout(config.dropout)
+
+  def forward(self, input_ids, token_type_ids=None, position_ids=None):
+    seq_length = input_ids.size(1)
     
-    x = self.token_embeddings(idx)  # Embedding lookup: (B, T, d_model)
-    total_aux_loss = 0.0
+    if position_ids is None:
+      position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device)
+      position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
     
-    # Propagate through each encoder block, accumulating auxiliary loss
-    for layer in self.blocks:
-      x, aux_loss = layer(x)
-      total_aux_loss += aux_loss
+    if token_type_ids is None:
+      token_type_ids = torch.zeros_like(input_ids)
 
-    # Final normalization and linear projection
-    x = self.norm_final(x)
-    logits = self.linear_final(x)  # (B, T, vocab_size)
+    words_embeddings = self.word_embeddings(input_ids)
+    position_embeddings = self.position_embeddings(position_ids)
+    token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-    # Computing main loss if targets are provided, & add weighted aux loss
+    embeddings = words_embeddings + position_embeddings + token_type_embeddings
+    embeddings = self.LayerNorm(embeddings)
+    embeddings = self.dropout(embeddings)
+    return embeddings
+
+class BertPooler(nn.Module):
+  # BERT pooler for [CLS] token
+  def __init__(self, config):
+    super().__init__()
+    self.dense = nn.Linear(config.d_model, config.d_model)
+    self.activation = nn.Tanh()
+
+  def forward(self, hidden_states):
+    # Pool the [CLS] token (first token)
+    first_token_tensor = hidden_states[:, 0]
+    pooled_output = self.dense(first_token_tensor)
+    pooled_output = self.activation(pooled_output)
+    return pooled_output
+
+class BertModel(nn.Module):
+  def __init__(self, config):
+    super().__init__()
+    self.config = config
+    
+    self.embeddings = BertEmbeddings(config)
+    self.encoder = BertEncoder(config)
+    self.pooler = BertPooler(config)
+    
+    self.init_weights()
+
+  def init_weights(self):
+    def _init_weights(module):
+      if isinstance(module, nn.Linear):
+        nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.bias is not None:
+          nn.init.zeros_(module.bias)
+      elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+          module.weight.data[module.padding_idx].zero_()
+      elif isinstance(module, LayerNorm):
+        nn.init.zeros_(module.bias)
+        nn.init.ones_(module.weight)
+    
+    self.apply(_init_weights)
+
+  def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None):
+    if attention_mask is None:
+      attention_mask = torch.ones_like(input_ids)
+
+    # Convert attention mask to proper format
+    extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+    extended_attention_mask = extended_attention_mask.to(dtype=torch.float32)  
+    extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+    embedding_output = self.embeddings(input_ids, token_type_ids, position_ids)
+    encoder_outputs = self.encoder(embedding_output, extended_attention_mask)
+    pooled_output = self.pooler(encoder_outputs)
+
+    return {
+      'last_hidden_state': encoder_outputs,
+      'pooler_output': pooled_output,
+      'hidden_states': encoder_outputs,
+    }
+
+class BertForMaskedLM(nn.Module):
+  # BERT for Masked Language Modeling
+  def __init__(self, config):
+    super().__init__()
+    self.bert = BertModel(config)
+    self.cls = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+    # Tie weights between input embeddings and output layer
+    self.cls.weight = self.bert.embeddings.word_embeddings.weight
+
+  def forward(self, input_ids, attention_mask=None, token_type_ids=None, labels=None):
+    outputs = self.bert(input_ids, attention_mask, token_type_ids)
+    sequence_output = outputs['last_hidden_state']
+    prediction_scores = self.cls(sequence_output)
+
     loss = None
-    if targets is not None:
-      B, T, C = logits.shape
-      logits_reshaped = logits.view(B * T, C)
-      targets_reshaped = targets.view(B * T)
-      main_loss = F.cross_entropy(logits_reshaped, targets_reshaped)
-      loss = main_loss + self.lambda_aux * total_aux_loss
-      
-    return logits, loss
+    if labels is not None:
+      loss_fn = nn.CrossEntropyLoss()
+      loss = loss_fn(prediction_scores.view(-1, self.bert.config.vocab_size), labels.view(-1))
+
+    return {
+      'loss': loss,
+      'logits': prediction_scores,
+      'hidden_states': outputs['hidden_states'],
+      'pooler_output': outputs['pooler_output']
+    }
+
+class BertForSequenceClassification(nn.Module):
+  # BERT for sequence classification
+  def __init__(self, config, num_labels):
+    super().__init__()
+    self.num_labels = num_labels
+    self.bert = BertModel(config)
+    self.dropout = nn.Dropout(config.dropout)
+    self.classifier = nn.Linear(config.d_model, num_labels)
+
+  def forward(self, input_ids, attention_mask=None, token_type_ids=None, labels=None):
+    outputs = self.bert(input_ids, attention_mask, token_type_ids)
+    pooled_output = outputs['pooler_output']
+    pooled_output = self.dropout(pooled_output)
+    logits = self.classifier(pooled_output)
+
+    loss = None
+    if labels is not None:
+      if self.num_labels == 1:
+        loss_fn = nn.MSELoss()
+        loss = loss_fn(logits.squeeze(), labels)
+      else:
+        loss_fn = nn.CrossEntropyLoss()
+        loss = loss_fn(logits, labels)
+
+    return {
+      'loss': loss,
+      'logits': logits,
+      'hidden_states': outputs['hidden_states'],
+      'pooler_output': outputs['pooler_output']
+    }
