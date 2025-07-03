@@ -51,10 +51,7 @@ class KANLayer(nn.Module):
     super().__init__()
     self.dim = dim
     self.num_bins = num_bins
-    self.edges = nn.ModuleList([
-      SplineEdge(num_bins, x_min, x_max)
-      for _ in range(dim * dim)
-    ])
+    self.edges = nn.ModuleList([SplineEdge(num_bins, x_min, x_max) for _ in range(dim * dim)])
 
   def forward(self, x: torch.Tensor):
     B, T, D = x.shape  # x: [B, T, dim]
@@ -117,9 +114,6 @@ class MLA(torch.nn.Module):
     emb = torch.outer(torch.arange(self.max_seq_len).float(), freqs)
     cos_cached = emb.cos()[None, None, :, :]
     sin_cached = emb.sin()[None, None, :, :]
-
-    # https://pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.register_buffer
-    # This is like a parameter but its a constant so we can use register_buffer
     self.register_buffer("cos_cached", cos_cached)
     self.register_buffer("sin_cached", sin_cached)
 
@@ -152,7 +146,6 @@ class MLA(torch.nn.Module):
       old_kv = self.kv_layernorm(old_kv)
       KV_for_lora = torch.cat([old_kv, new_kv], dim=1)
       K_for_rope = torch.cat([old_K_for_rope, new_K_for_rope], dim=1)
-            
 
       KV = KV_for_lora @ self.W_ukv
       KV = KV.view(B, -1, self.n_heads, self.dh+self.qk_nope_dim).transpose(1,2)
@@ -190,20 +183,13 @@ class MLA(torch.nn.Module):
 class FeedForward(nn.Module):
   def __init__(self, d_model, dropout, num_bins=6, hidden_dim=None, ffn_multiplier=None):
     super().__init__()
-    # Fixed the logic for hidden_dim calculation
     if hidden_dim is not None:
       self.hidden_dim = int(2 * hidden_dim / 3)
     elif ffn_multiplier is not None:
       self.hidden_dim = int(ffn_multiplier * d_model)
     else:
       self.hidden_dim = 4 * d_model  # Default fallback
-      
-    self.net = nn.Sequential(
-      nn.Linear(d_model, self.hidden_dim),
-      nn.GELU(),
-      nn.Linear(self.hidden_dim, d_model),
-      nn.Dropout(dropout),
-    )
+    self.net = nn.Sequential(nn.Linear(d_model, self.hidden_dim), nn.GELU(), nn.Linear(self.hidden_dim, d_model), nn.Dropout(dropout))
     self.projection = KANLayer(d_model, num_bins=num_bins)  # additional KAN layer projection
 
   def forward(self, x: torch.Tensor):
@@ -215,16 +201,16 @@ class DecoderBlock(nn.Module):
     self.self_att = MLA(d_model, n_heads, block_size)
     self.ffwd = FeedForward(d_model, dropout, num_bins, n_ff, ffn_multiplier)
     self.dropout = nn.Dropout(dropout)
-    self.norm1 = RMSNorm(d_model, eps=norm_eps)  # Added separate norm layers
+    self.norm1 = RMSNorm(d_model, eps=norm_eps)
     self.norm2 = RMSNorm(d_model, eps=norm_eps)
 
   def forward(self, x: torch.Tensor):
     # Pre-norm architecture
     x_out = self.self_att(self.norm1(x))
-    x = x + self.dropout(x_out)  # Residual connection
+    x = x + self.dropout(x_out)
 
     x_ff = self.ffwd(self.norm2(x))
-    x = x + self.dropout(x_ff)  # Residual connection
+    x = x + self.dropout(x_ff)
     return x
 
 class Transformer(nn.Module):
@@ -234,53 +220,34 @@ class Transformer(nn.Module):
       block_size = params.block_size
     self.block_size = block_size
     self.vocab_size = vocab_size
-    self.token_projection = nn.Linear(vocab_size, params.d_model, bias=False)
+    self.token_embeddings = nn.Embedding(vocab_size, params.d_model)
     self.decoder = nn.Sequential(*[
-      DecoderBlock(
-        d_model=params.d_model,
-        block_size=block_size,
-        num_bins=params.num_bins,
-        n_heads=params.n_heads,
-        norm_eps=params.norm_eps,
-        dropout=params.dropout,
-        latent_dim=params.n_latent,
-        projection_bins=params.num_bins,
-        bias=params.bias,
-        device=params.device,
-        n_ff=params.n_ff,
-        ffn_multiplier=params.ffn_multiplier
-      ) for _ in range(params.n_layers)
-    ])
+      DecoderBlock(d_model=params.d_model, block_size=block_size, num_bins=params.num_bins, n_heads=params.n_heads, norm_eps=params.norm_eps, dropout=params.dropout,
+                   latent_dim=params.n_latent, projection_bins=params.num_bins, bias=params.bias, device=params.device, n_ff=params.n_ff, ffn_multiplier=params.ffn_multiplier)
+                   for _ in range(params.n_layers)])
     self.norm_final = RMSNorm(params.d_model, eps=params.norm_eps)
     self.linear_final = nn.Linear(params.d_model, vocab_size, bias=False)
     self.dropout = nn.Dropout(params.dropout)
-    
-    # Initialize weights
     self.apply(self._init_weights)
 
   def _init_weights(self, module):
     if isinstance(module, nn.Linear):
       torch.nn.init.kaiming_uniform_(module.weight, mean=0.0, std=0.05)
-      if module.bias is not None:
-        torch.nn.init.zeros_(module.bias)
-    elif isinstance(module, nn.Embedding):
-      torch.nn.init.sparse_(module.weight, mean=0.0, std=0.05)
+      if module.bias is not None: torch.nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding): torch.nn.init.sparse_(module.weight, mean=0.0, std=0.05)
 
   def forward(self, idx: torch.Tensor, targets: torch.Tensor = None):
     B, T = idx.shape
     assert T <= self.block_size, f"Sequence length {T} exceeds block size {self.block_size}"
-    
-    x = self.token_projection(idx)  # idx shape: [batch, seq_len, vocab_size] with one-hot vectors
+    x = self.token_embeddings(idx)  # idx shape: [batch, block_size]
     x = self.decoder(x)
     x = self.norm_final(x)
     logits = self.linear_final(x)
 
-    if targets is None:
-      loss = None
+    if targets is None: loss = None
     else:
       B, T, C = logits.shape
       logits_flat = logits.view(B * T, C)
       targets_flat = targets.view(B * T)
       loss = F.cross_entropy(logits_flat, targets_flat)
-
     return logits, loss
